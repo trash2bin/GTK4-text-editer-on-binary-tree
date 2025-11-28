@@ -6,6 +6,28 @@ pkg_check_modules(GTKMM REQUIRED gtkmm-4.0)
 option(ENABLE_MAX_OPTIM "Enable maximal optimizations for Release builds (march=native, flto, strip)" OFF)
 option(ENABLE_PORTABLE_OPTIM "Enable portable optimized build (no march=native, safe flags like -O2 -flto)" OFF)
 
+
+# Попытка подставить gcc-ar/gcc-ranlib для LTO
+if((ENABLE_MAX_OPTIM OR ENABLE_PORTABLE_OPTIM) AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  find_program(GCC_AR NAMES gcc-ar ${CMAKE_C_COMPILER}-ar ar)
+  find_program(GCC_RANLIB NAMES gcc-ranlib ${CMAKE_C_COMPILER}-ranlib ranlib)
+  if(GCC_AR AND GCC_RANLIB)
+    message(STATUS "Using ${GCC_AR} and ${GCC_RANLIB} for LTO-capable archives")
+    set(CMAKE_AR "${GCC_AR}" CACHE FILEPATH "Archiver" FORCE)
+    set(CMAKE_RANLIB "${GCC_RANLIB}" CACHE FILEPATH "Ranlib" FORCE)
+  else()
+    message(WARNING "gcc-ar/gcc-ranlib not found: static archive with LTO may fail. Consider disabling -flto in Nix.")
+  endif()
+endif()
+
+# Отключаем march=native если NIX_ENFORCE_NO_NATIVE установлена в окружении
+if(DEFINED ENV{NIX_ENFORCE_NO_NATIVE})
+  message(STATUS "NIX_ENFORCE_NO_NATIVE detected — disabling -march=native and similar impure flags")
+  # выключаем ENABLE_MAX_OPTIM автоматически (или можно только убрать march)
+  set(ENABLE_MAX_OPTIM OFF CACHE BOOL "Disable max optim because Nix forbids native" FORCE)
+endif()
+
+
 # --- библиотека с логикой ---
 add_library(tree_lib STATIC
     Tree.cpp

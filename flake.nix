@@ -1,40 +1,34 @@
 {
-  description = "A development environment for a gtkmm4 C++ project";
+  description = "Dev shell for gtkmm4 C++ project (with LTO-friendly tools)";
 
   inputs = {
-    # 1. Пиннинг nixpkgs для воспроизводимости
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # Используйте стабильную ветку
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs = { nixpkgs, ... }:
   let
-    # Определение целевой системы (архитектуры)
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
   in
   {
-    # 2. Определение среды разработки (devShell)
     devShells.${system}.default = pkgs.mkShell {
-
-      # nativeBuildInputs: Инструменты, которые запускаются во время сборки (cmake, make, pkg-config).
-      # Они попадают в PATH.
+      # Базовые инструменты для сборки
       nativeBuildInputs = with pkgs; [
-        cmake        # Настройка проекта
-        gnumake      # Сборка
-        pkg-config   # Поиск библиотек
+        cmake
+        ninja
+        gnumake      # make
+        pkg-config
       ];
 
-      # buildInputs: Библиотеки, с которыми будет линковаться ваша программа (gtkmm4, libsigcxx4).
-      # Nix автоматически добавляет их пути в PKG_CONFIG_PATH и CMAKE_PREFIX_PATH.
+      # Компилятор/линкер/архиватор и отладка
       buildInputs = with pkgs; [
+        gcc                  # GNU toolchain (gcc, gcc-ar, gcc-ranlib)
+        binutils             # ar/ranlib/ld/strip (на случай fallback)
+        gdb
+        clang-tools          # опционально: clang-tidy/clang-format
         gtkmm4
-        libsigcxx # Важная зависимость для gtkmm
+        libsigcxx
       ];
-
-      # Дополнительные шаги, если нужно что-то специфичное
-      shellHook = ''
-        echo "C++ среда для gtkmm4 загружена. Используйте 'cmake -B build' и 'make -C build'."
-      '';
     };
   };
 }
