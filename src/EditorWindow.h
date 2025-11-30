@@ -42,7 +42,6 @@ private:
     std::string m_last_text;      // байтовая копия текста (UTF-8 bytes)
     bool m_syncing = false;       // если true — игнорировать изменения буфера (программные обновления)
     int m_edit_ops_count = 0;     // счетчик операций (для ребаланса)
-    const int REBALANCE_THRESHOLD = 200; // после скольких операций вызывать rebalance()
 
 
     // Элементы пользовательского интерфейса

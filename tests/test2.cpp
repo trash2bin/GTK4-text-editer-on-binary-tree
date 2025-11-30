@@ -309,45 +309,6 @@ bool testGetTextRange() {
     return true;
 }
 
-// Тест 8: Ребалансировка дерева
-bool testRebalanceTree() {
-    // Создаём дерево с мелкими листьями
-    Tree tree;
-    std::string content(8000, 'A'); // 8KB > MAX_LEAF_SIZE
-    tree.fromText(content.c_str(), content.size());
-    
-    // Разбиваем на много мелких листьев
-    for (int i = 0; i < 8; ++i) {
-        tree.insert(i * 1000, "\n", 1);
-    }
-    ASSERT_EQUAL(tree.getTotalLineCount(), 9, "Line count should be 9 after splits");
-    
-    // Удаляем разделители, чтобы листья можно было объединить
-    for (int i = 0; i < 8; ++i) {
-        tree.erase(i * 1000, 1);
-    }
-    ASSERT_EQUAL(tree.getTotalLineCount(), 1, "Line count should be 1 after merges");
-    
-    // Принудительная ребалансировка
-    tree.rebalance();
-    
-    // Проверяем, что дерево объединилось в один лист
-    ASSERT(tree.getRoot() != nullptr, "Root should not be null after rebalance");
-    
-    // Используем специальный макрос для сравнения NodeType
-    ASSERT_EQUAL_NODE_TYPE(tree.getRoot()->getType(), NodeType::NODE_LEAF, "Root should be leaf after rebalance");
-    
-    ASSERT_EQUAL(tree.getRoot()->getLength(), 8000, "Leaf length mismatch after rebalance");
-    
-    // Проверка целостности данных
-    char* result = tree.toText();
-    ASSERT(result != nullptr, "toText() returned null after rebalance");
-    ASSERT(compareText(content.c_str(), result, content.size()), "Text mismatch after rebalance");
-    delete[] result;
-    
-    return true;
-}
-
 // Тест 9: Стресс-тест с кириллицей
 bool testStressWithCyrillic() {
     // Генерируем 100 строк кириллицы (~10KB) БЕЗ \n в конце последней строки
@@ -412,7 +373,6 @@ int main() {
         testGetOffsetForLine,
         testFindSubstring,
         testGetTextRange,
-        testRebalanceTree,
         testStressWithCyrillic
     };
     

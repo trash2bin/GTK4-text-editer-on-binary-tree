@@ -1,8 +1,9 @@
 #ifndef TREE_H
 #define TREE_H
 
-// Настройка размера листа. 4KB - золотая середина (размер страницы памяти)
-const int MAX_LEAF_SIZE = 4096; 
+
+//! КРАЙ ПО КОТОРОМУ РЕЖЕТСЯ ЛИСТ - НЕКОРРЕКТНОЕ ПОВЕДЕНИЕ ПОСЛЕ 
+const int MAX_LEAF_SIZE = 4096; //TODO: фикс
 
 enum class NodeType : char {
     NODE_INTERNAL = 0,
@@ -97,9 +98,6 @@ private:
 
     int findSubstringRecursive(Node* node, const char* pattern, int patternLen, const int* lps, int& j, int& processed) const;
 
-    // Ребалансировка
-    void rebalanceRecursive(Node*& node);
-
 public:
     Tree();
     ~Tree();
@@ -121,9 +119,12 @@ public:
 
     int findSubstring(const char* pattern, int patternLen) const; // offset или -1
 
+    // Возвращает номер строки (0-based), в которой начинается совпадение шаблона,
+    // или -1 если не найдено.
+    int findSubstringLine(const char* pattern, int patternLen) const;
+
     void insert(int pos, const char* data, int len); // публичная обёртка
     void erase(int pos, int len);// публичная обёртка
-    void rebalance();// публичный вызов ребаланса
 
 
     Node* getRoot() const;

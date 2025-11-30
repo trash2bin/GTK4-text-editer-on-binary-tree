@@ -224,12 +224,6 @@ void EditorWindow::on_textbuffer_changed() {
         ++m_edit_ops_count;
     }
 
-    // Иногда ребалансить (экономично)
-    if (m_edit_ops_count >= REBALANCE_THRESHOLD) {
-        m_tree.rebalance();
-        m_edit_ops_count = 0;
-    }
-
     // Обновляем snapshot (после успешных операций)
     m_last_text.swap(new_text); // быстро swap
 
@@ -390,32 +384,69 @@ void EditorWindow::on_search_activate() {
         return;
     }
 
-    // --- Текстовый поиск через дерево (эффективнее) ---
+    // --- Текстовый поиск через дерево (возвращает номер строки) ---
     auto buf = m_textview.get_buffer();
     if (!buf) { set_status("No buffer"); return; }
 
     const char* pattern = queryStr.c_str();
     auto patternLen = static_cast<int>(queryStr.size());
 
-    // Ищем в дереве
-    int offset = m_tree.findSubstring(pattern, patternLen);
-    if (offset == -1) {
+    // Ищем номер строки (0-based), где начинается совпадение
+    int lineNumber = m_tree.findSubstringLine(pattern, patternLen);
+    if (lineNumber == -1) {
         set_status("Not found: \"" + queryStr + "\"");
         return;
     }
 
-    // Получаем TextIters по найденному оффсету
-    Gtk::TextBuffer::iterator it_start = buf->get_iter_at_offset(offset);
-    Gtk::TextBuffer::iterator it_end   = buf->get_iter_at_offset(offset + patternLen);
+    // Получаем строку из дерева (char* — нужно delete[])
+    char* lineBuf = m_tree.getLine(lineNumber);
+    if (!lineBuf) {
+        set_status("Found line but failed to get its text");
+        return;
+    }
+    std::string lineStr(lineBuf);
+    delete[] lineBuf;//NOSONAR // освобождаем, как требует контракт getLine
+
+    // Локально ищем шаблон внутри строки (байтовый поиск корректен для UTF-8 точного совпадения)
+    std::size_t localBytePos = lineStr.find(queryStr);
+    if (localBytePos == std::string::npos) {
+        // Технически это маловероятно, но на всякий случай — сообщаем об ошибке.
+        set_status("Found line, but substring not found inside it (unexpected)");
+        return;
+    }
+
+    // Преобразуем байтовый оффсет внутри строки в количество UTF-8 символов (codepoints)
+    // g_utf8_strlen подсчитывает кодовые точки в первых `localBytePos` байтах.
+    auto charOffsetInLine = g_utf8_strlen(lineStr.c_str(), static_cast<int>(localBytePos));
+
+    // Длина шаблона в символах (для корректного выделения)
+    auto patternCharLen = g_utf8_strlen(pattern, patternLen);
+
+    // Получим итератор на начало строки в буфере
+    Gtk::TextBuffer::iterator it_line_start = buf->get_iter_at_line(lineNumber);
+
+    // Продвинем итератор на charOffsetInLine символов (используем цикл, чтобы быть совместимым)
+    Gtk::TextBuffer::iterator it_start = it_line_start;
+    for (int k = 0; k < charOffsetInLine; ++k) {
+        if (!it_start) break;
+        it_start.forward_char();
+    }
+
+    // Создаём it_end и продвигаем на длину шаблона (в символах)
+    Gtk::TextBuffer::iterator it_end = it_start;
+    for (int k = 0; k < patternCharLen; ++k) {
+        if (!it_end) break;
+        it_end.forward_char();
+    }
 
     // Выделяем и скроллим
     buf->select_range(it_start, it_end);
     m_textview.scroll_to(it_start, 0.0);
 
-    // Показываем строку в статусе
-    int line_of_match = it_start.get_line() + 1; // 1-based для UI
-    set_status("Found at line " + std::to_string(line_of_match));
+    // Показываем строку в статусе (1-based)
+    set_status("Found at line " + std::to_string(lineNumber + 1));
 }
+
 
 
 void EditorWindow::go_to_line_index(int lineIndex0Based) {

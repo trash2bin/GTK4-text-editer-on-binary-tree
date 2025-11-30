@@ -1,4 +1,5 @@
 #include "Tree.h"
+#include <cassert>
 #include <cstring>
 #include <stdexcept>
 #include <sstream>
@@ -119,7 +120,6 @@ void Tree::clear() {
 void Tree::clearRecursive(Node* node) {
     if (!node) return;
     
-    // Используем getType, как ты хотел
     if (node->getType() == NodeType::NODE_INTERNAL) {
         auto inner = static_cast<InternalNode*>(node);
         clearRecursive(inner->left);
@@ -144,6 +144,7 @@ Node* Tree::buildFromTextRecursive(const char* text, int len) {
     // УСЛОВИЕ ЛИСТА:
     // Если текст влезает в лимит размера, делаем лист.
     // Это гарантирует, что даже файл без \n будет разбит на куски.
+    //! КРАЙ ПО КОТОРОМУ РЕЖЕТСЯ ЛИСТ - НЕКОРРЕКТНОЕ ПОВЕДЕНИЕ ПОСЛЕ
     if (len <= MAX_LEAF_SIZE) {
         return new LeafNode(text, len); // NOSONAR
     } 
@@ -180,10 +181,25 @@ Node* Tree::buildFromTextRecursive(const char* text, int len) {
         splitIndex = half;
     }
 
-    Node* left = buildFromTextRecursive(text, splitIndex);
-    Node* right = buildFromTextRecursive(text + splitIndex, len - splitIndex);
 
-    return new InternalNode(left, right); // NOSONAR
+    Node* left = nullptr;
+    Node* right = nullptr;
+
+    // Построим детей. Если создание одного из них бросит — мы ничего не удаляем,
+    // потому что ничего ещё не было выделено на нашей стороне.
+    left = buildFromTextRecursive(text, splitIndex);
+    right = buildFromTextRecursive(text + splitIndex, len - splitIndex);
+
+    // Попытка создать internal; если бросит — не забываем удалить детей.
+    try {
+        Node* node = new InternalNode(left, right); //NOSONAR
+        return node;
+    } catch (...) {
+        // Удаляем уже созданных потомков во избежание утечек.
+        if (left)  clearRecursive(left);
+        if (right) clearRecursive(right);
+        throw;
+    }
 }
 
 void Tree::fromText(const char* text, int len) {
@@ -338,24 +354,31 @@ int Tree::getTotalLineCount() const {
     return root->getLineCount();
 }
 
+// static helper: вычислить байтовое смещение для начала указанной строки внутри поддерева.
+// Предполагается: node != nullptr и lineIndex корректен для этого поддерева.
+// При нарушении инвариантов — assertion в debug.
 static int getOffsetForLineRecursive(Node* node, int lineIndex) {
-    if (!node) throw std::out_of_range("Empty tree / line index out of range");
+    assert(node != nullptr);
 
     if (node->getType() == NodeType::NODE_LEAF) {
-        auto leaf = dynamic_cast<LeafNode*>(node);
-        if (!leaf) throw std::runtime_error("Bad cast to LeafNode");
-        // Проходим по байтам листа, считаем '\n'
+        // Т.к. мы проверили getType, static_cast безопасен и быстрее dynamic_cast.
+        auto leaf = static_cast<LeafNode*>(node);
+        // Защита на случай нарушения инварианта (только debug)
+        assert(leaf != nullptr);
+
         int linesSeen = 0;
         for (int i = 0; i < leaf->length; ++i) {
             if (linesSeen == lineIndex) return i; // offset внутри листа
             if (leaf->data[i] == '\n') ++linesSeen;
         }
-        // если lineIndex == linesSeen (после последнего '\n'), offset = length
         if (linesSeen == lineIndex) return leaf->length;
+        // Если индекс оказался некорректным — бросим понятное исключение в релизе.
         throw std::out_of_range("Line index out of range inside leaf");
     } else {
-        auto in = dynamic_cast<InternalNode*>(node);
-        if (!in) throw std::runtime_error("Bad cast to InternalNode");
+        // internal node
+        auto in = static_cast<InternalNode*>(node);
+        assert(in != nullptr);
+
         int leftLines = in->left ? in->left->getLineCount() : 0;
         if (lineIndex < leftLines) {
             return getOffsetForLineRecursive(in->left, lineIndex);
@@ -365,6 +388,7 @@ static int getOffsetForLineRecursive(Node* node, int lineIndex) {
         }
     }
 }
+
 
 int Tree::getOffsetForLine(int lineIndex0Based) const {
     if (!root) throw std::out_of_range("Tree is empty");
@@ -395,7 +419,7 @@ LeafNode* Tree::findLeafByOffsetRecursive(Node* node, int& localOffset) {
 }
 
 // splitLeafAtOffset: возвращает новый суб-дерево указатель (InternalNode или Leaf/NULL)
-Node* Tree::splitLeafAtOffset(LeafNode* leaf, int offset) {
+Node* Tree::splitLeafAtOffset(LeafNode* leaf, int offset) { //NOSONAR
     if (!leaf) return nullptr;
     if (offset < 0) offset = 0;
     if (offset > leaf->length) offset = leaf->length;
@@ -406,19 +430,56 @@ Node* Tree::splitLeafAtOffset(LeafNode* leaf, int offset) {
     LeafNode* leftLeaf = nullptr;
     LeafNode* rightLeaf = nullptr;
 
-    if (leftLen > 0) leftLeaf = new LeafNode(leaf->data, leftLen); //NOSONAR
-    if (rightLen > 0) rightLeaf = new LeafNode(leaf->data + offset, rightLen);//NOSONAR
+    // Попытка создать левый лист (если нужен)
+    if (leftLen > 0) {
+        try {
+            leftLeaf = new LeafNode(leaf->data, leftLen); //NOSONAR
+        } catch (...) {
+            if (leftLeaf)  clearRecursive(leftLeaf);
+            if (rightLeaf) clearRecursive(rightLeaf);
+            throw;
+        }
+    }
 
-    // удаляем исходный лист (который заменяется)
+    // Попытка создать правый лист (если нужен)
+    if (rightLen > 0) {
+        try {
+            rightLeaf = new LeafNode(leaf->data + offset, rightLen); //NOSONAR
+        } catch (...) {
+            // если левый уже создан — удалить его, чтобы не было утечки
+            if (leftLeaf) { delete leftLeaf; leftLeaf = nullptr; }//NOSONAR
+            throw;
+        }
+    }
+
+    // На этом моменте leftLeaf/rightLeaf созданы успешно (возможны nullptr).
+    // Создаём возвращаемую структуру и только после успешного создания — удаляем исходный leaf.
+    Node* result = nullptr;
+    try {
+        if (!leftLeaf && !rightLeaf) {
+            result = nullptr;
+        } else if (!leftLeaf) {
+            result = rightLeaf;
+            rightLeaf = nullptr; // ownership перенесён
+        } else if (!rightLeaf) {
+            result = leftLeaf;
+            leftLeaf = nullptr;
+        } else {
+            result = new InternalNode(leftLeaf, rightLeaf);//NOSONAR
+            leftLeaf = nullptr; rightLeaf = nullptr;
+        }
+    } catch (...) {
+        // Если создание InternalNode упало — удалить дочерние листья (если они ещё у нас)
+        if (leftLeaf) { delete leftLeaf; leftLeaf = nullptr; }//NOSONAR
+        if (rightLeaf) { delete rightLeaf; rightLeaf = nullptr; }//NOSONAR
+        throw;
+    }
+
+    // Теперь безопасно удалить оригинал — ownership перенесён.
     delete leaf;//NOSONAR
-
-    // Если одна часть пустая — возвращаем только ненулевую часть:
-    if (!leftLeaf && !rightLeaf) return nullptr;
-    if (!leftLeaf) return rightLeaf;
-    if (!rightLeaf) return leftLeaf;
-
-    return new InternalNode(leftLeaf, rightLeaf);//NOSONAR
+    return result;
 }
+
 
 
 // Вспомогательная: вычислить индекс разреза (поведение как в buildFromTextRecursive)
@@ -440,9 +501,11 @@ int Tree::findSplitIndexForLeaf(const LeafNode* leaf) const {
     return half;
 }
 
+// ------------------ insertIntoLeaf (защита временного буфера) ------------------
 Node* Tree::insertIntoLeaf(LeafNode* leaf, int pos, const char* data, int len) {
     if (!leaf) {
-        return new LeafNode(data, len); // NOSONAR
+        // Прямо создаём лист; если бросит — ничего не утекает здесь.
+        return new LeafNode(data, len);//NOSONAR
     }
 
     if (pos < 0) pos = 0;
@@ -451,8 +514,14 @@ Node* Tree::insertIntoLeaf(LeafNode* leaf, int pos, const char* data, int len) {
     int leafLen = leaf->length;
     int newLen = leafLen + len;
 
-    // Сборка временного буфера: [prefix][data][suffix]
-    char* buf = new char[newLen]; // NOSONAR
+    // Временный буфер
+    char* buf = nullptr;
+    try {
+        buf = new char[newLen];//NOSONAR
+    } catch (...) { //NOSONAR
+        throw; // если не выделилось — просто пробросим
+    }
+
     if (pos > 0 && leaf->data) {
         std::memcpy(buf, leaf->data, pos);
     }
@@ -463,20 +532,40 @@ Node* Tree::insertIntoLeaf(LeafNode* leaf, int pos, const char* data, int len) {
         std::memcpy(buf + pos + len, leaf->data + pos, leafLen - pos);
     }
 
-    // Новый лист
-    LeafNode* newLeaf = new LeafNode(buf, newLen);// NOSONAR
-    delete[] buf;// NOSONAR
-    delete leaf; // NOSONAR// удалить старый лист
+    // Создаём новый лист; если бросит — освободим buf
+    LeafNode* newLeaf = nullptr;
+    try {
+        newLeaf = new LeafNode(buf, newLen);//NOSONAR
+    } catch (...) {
+        delete[] buf;//NOSONAR
+        throw;
+    }
+    // newLeaf создан успешно — временный buf больше не нужен
+    delete[] buf;//NOSONAR
 
-    // Если превысили порог — split
+    // Удаляем исходный лист (ownership перенесён)
+    delete leaf;//NOSONAR
+
+    // Если слишком большой — разбиваем; splitLeafAtOffset берёт владение newLeaf или удалит его при ошибке.
+    //! КРАЙ ПО КОТОРОМУ РЕЖЕТСЯ ЛИСТ - НЕКОРРЕКТНОЕ ПОВЕДЕНИЕ ПОСЛЕ
     if (newLeaf->length > MAX_LEAF_SIZE) {
         int splitIndex = findSplitIndexForLeaf(newLeaf);
-        Node* splitted = splitLeafAtOffset(newLeaf, splitIndex);
-        return splitted;
+        Node* splitted = nullptr;
+        try {
+            splitted = splitLeafAtOffset(newLeaf, splitIndex);
+            return splitted;
+        } catch (...) {
+            // split упал — newLeaf может быть удалён внутри splitLeafAtOffset при ошибке,
+            // либо если split выбросил до удаления newLeaf — удалим его здесь, но проверить на nullptr.
+            // В нашем splitLeafAtOffset newLeaf не удаляется при исключении (мы защитились), поэтому:
+            if (newLeaf) delete newLeaf;//NOSONAR
+            throw;
+        }
     }
 
     return newLeaf;
 }
+
 
 
 // Вставляет [data, data+len) в позицию pos внутри node и возвращает новый Node* для замены.
@@ -509,21 +598,25 @@ Node* Tree::insertRecursive(Node* node, int pos, const char* data, int len) {
 Node* Tree::eraseFromLeaf(LeafNode* leaf, int pos, int len) {
     if (!leaf || len <= 0) return leaf;
 
-    // Нормализуем pos
     if (pos < 0) pos = 0;
-    if (pos >= leaf->length) return leaf; // ничего не удаляем
+    if (pos >= leaf->length) return leaf;
 
     int delLen = len;
     if (pos + delLen > leaf->length) delLen = leaf->length - pos;
 
     int newLen = leaf->length - delLen;
     if (newLen <= 0) {
-        delete leaf;// NOSONAR // удалили весь лист
+        delete leaf; //NOSONAR
         return nullptr;
     }
 
-    // Создаём буфер без использования 'p'
-    char* buf = new char[newLen]; // NOSONAR
+    char* buf = nullptr;
+    try {
+        buf = new char[newLen]; //NOSONAR
+    } catch (...) { //NOSONAR
+        throw;
+    }
+
     if (pos > 0 && leaf->data) {
         std::memcpy(buf, leaf->data, pos);
     }
@@ -532,11 +625,18 @@ Node* Tree::eraseFromLeaf(LeafNode* leaf, int pos, int len) {
         std::memcpy(buf + pos, leaf->data + pos + delLen, tail);
     }
 
-    LeafNode* newLeaf = new LeafNode(buf, newLen); // NOSONAR
-    delete[] buf; // NOSONAR
-    delete leaf;  // NOSONAR
+    LeafNode* newLeaf = nullptr;
+    try {
+        newLeaf = new LeafNode(buf, newLen); //NOSONAR
+    } catch (...) {
+        delete[] buf; //NOSONAR
+        throw;
+    }
+    delete[] buf; //NOSONAR
+    delete leaf; //NOSONAR
     return newLeaf;
 }
+
 
 // Если один/оба ребёнка отсутствуют — заменить internal на существующего ребёнка (или nullptr).
 // Иначе пересчитать кэши и вернуть inner.
@@ -605,7 +705,6 @@ void Tree::insert(int pos, const char* data, int len) {
 
     root = insertRecursive(root, pos, data, len);
     // Для простоты — делаем глобальный ребаланс после операции.
-    rebalance();
 }
 
 void Tree::erase(int pos, int len) {
@@ -617,61 +716,6 @@ void Tree::erase(int pos, int len) {
     if (pos + len > total) len = total - pos;
 
     root = eraseRecursive(root, pos, len);
-    rebalance();
-}
-
-// Рекурсивный проход, объединяем соседние листья когда это возможно.
-// Используется Node*& чтобы иметь возможность заменить node на новый лист.
-void Tree::rebalanceRecursive(Node*& node) {
-    if (!node) return;
-    if (node->getType() == NodeType::NODE_LEAF) return;
-
-    auto inner = static_cast<InternalNode*>(node);
-    // рекурсивно обработать детей
-    if (inner->left) rebalanceRecursive(inner->left);
-    if (inner->right) rebalanceRecursive(inner->right);
-
-    // если оба child — листья — попытаться объединить
-    if (inner->left && inner->right &&
-        inner->left->getType() == NodeType::NODE_LEAF &&
-        inner->right->getType() == NodeType::NODE_LEAF) {
-
-        auto L = static_cast<LeafNode*>(inner->left);
-        auto R = static_cast<LeafNode*>(inner->right);
-        int combined = L->length + R->length;
-        if (combined <= MAX_LEAF_SIZE) {
-            // собрать единый буфер
-            auto merged = new char[combined];//NOSONAR
-            int pos = 0;
-            if (L->length > 0 && L->data) {
-                std::memcpy(merged + pos, L->data, L->length);
-                pos += L->length;
-            }
-            if (R->length > 0 && R->data) {
-                std::memcpy(merged + pos, R->data, R->length);
-                pos += R->length;
-            }
-            // удаляем старые объекты
-            delete L;//NOSONAR
-            delete R;//NOSONAR
-            delete inner;//NOSONAR
-
-            // создаём новый лист и заменяем node
-            LeafNode* newLeaf = new LeafNode(merged, combined);//NOSONAR
-
-            delete[] merged; //NOSONAR
-
-            node = newLeaf;
-            return;
-        }
-    }
-
-    // иначе пересчитать кэши
-    inner->recalc();
-}
-
-void Tree::rebalance() {
-    rebalanceRecursive(root);
 }
 
 
@@ -702,20 +746,32 @@ void Tree::getTextRangeRecursive(Node* node, int& offset, int& len, char* out, i
 }
 
 char* Tree::getTextRange(int offset, int len) const {
-    if (!root || len <= 0) return nullptr;
+    // Если дерево пустое — возвращаем nullptr (как раньше).
+    if (!root) return nullptr;
+
+    // Нормализуем len: если запрошено 0 байт — возвращаем пустую нуль-терминированную строку.
+    if (len <= 0) {
+        auto empty = new char[1]; //NOSONAR
+        empty[0] = '\0';
+        return empty;
+    }
 
     int total = root->getLength();
     if (offset < 0 || offset > total) throw std::out_of_range("Offset out of range");
     if (offset + len > total) len = total - offset; // обрезка до конца
 
-    char* out = new char[len]; //NOSONAR
+    // Выделяем +1 байт для нуль-терминатора.
+    auto out = new char[len + 1]; //NOSONAR // теперь место под '\0'
     int outPos = 0;
     int off = offset;
     int l = len;
     getTextRangeRecursive(root, off, l, out, outPos);
+
+    // Гарантируем нуль-терминатор; outPos должен быть равен len, но на всякий случай ставим '\0' по outPos.
+    out[outPos] = '\0';
+
     return out;
 }
-
 // --- вспомогательная функция: строим lps (longest prefix suffix) для KMP вручную ---
 void Tree::buildKMPTable(const char* pattern, int patternLen, int* lps) const {
     int len = 0;
@@ -742,8 +798,9 @@ int Tree::findSubstringRecursive(Node* node, const char* pattern, int patternLen
     if (!node) return -1;
 
     if (node->getType() == NodeType::NODE_LEAF) {
-        auto leaf = dynamic_cast<LeafNode*>(node);
-        if (!leaf) return -1;
+        // static_cast безопасен, т.к. проверили тип
+        auto leaf = static_cast<LeafNode*>(node);
+        assert(leaf != nullptr);
 
         for (int i = 0; i < leaf->length; ++i) {
             auto c = static_cast<unsigned char>(leaf->data[i]);
@@ -752,13 +809,16 @@ int Tree::findSubstringRecursive(Node* node, const char* pattern, int patternLen
             if (j == patternLen) {
                 int matchEnd = processed + i;
                 int matchStart = matchEnd - patternLen + 1;
-                return matchStart; // байтовый offset
+                return matchStart;
             }
         }
         processed += leaf->length;
         return -1;
     } else {
-        auto in = dynamic_cast<InternalNode*>(node);
+        // internal node — static_cast после проверки типа
+        auto in = static_cast<InternalNode*>(node);
+        assert(in != nullptr);
+
         int r = -1;
         if (in->left) { r = findSubstringRecursive(in->left, pattern, patternLen, lps, j, processed); if (r != -1) return r; }
         if (in->right) { r = findSubstringRecursive(in->right, pattern, patternLen, lps, j, processed); if (r != -1) return r; }
@@ -766,17 +826,120 @@ int Tree::findSubstringRecursive(Node* node, const char* pattern, int patternLen
     }
 }
 
+
 int Tree::findSubstring(const char* pattern, int patternLen) const {
     if (!root || !pattern || patternLen <= 0) return -1;
 
-    auto lps = new int[patternLen]; //NOSONAR
-    buildKMPTable(pattern, patternLen, lps);
+    int* lps = nullptr;
+    try {
+        lps = new int[patternLen]; //NOSONAR
+    } catch (...) {
+        delete[] lps; //NOSONAR
+        throw;
+    }
 
-    int j = 0;          // текущее состояние KMP
-    int processed = 0;  // глобальный offset по дереву
+    try {
+        buildKMPTable(pattern, patternLen, lps);
 
-    int result = findSubstringRecursive(root, pattern, patternLen, lps, j, processed);
+        int j = 0;
+        int processed = 0;
+        int result = findSubstringRecursive(root, pattern, patternLen, lps, j, processed);
 
-    delete[] lps; //NOSONAR
-    return result; // -1 если не найдено
+        delete[] lps; //NOSONAR
+        return result;
+    } catch (...) {
+        delete[] lps; //NOSONAR
+        throw;
+    }
 }
+
+// Рекурсивный KMP-по-листам, но аккумулирует количество строк (processedLines).
+// Возвращает номер строки (0-based) если найдено, иначе -1.
+// Параметры:
+//  - node: текущий узел
+//  - pattern, patternLen: шаблон и его длина
+//  - lps: предвычисленная таблица KMP
+//  - j: текущее состояние автомата KMP (сохраняется между листами)
+//  - processedLines: сколько строк ( '\n' ) уже полностью пройдены раньше (в предыдущих листьях)
+static int findSubstringLineRecursive(Node* node,
+                                      const char* pattern, int patternLen,
+                                      const int* lps,
+                                      int& j,
+                                      int& processedLines) {
+    if (!node) return -1;
+
+    if (node->getType() == NodeType::NODE_LEAF) {
+        auto leaf = static_cast<LeafNode*>(node);
+        // Проходим байты листа, применяем KMP.
+        for (int i = 0; i < leaf->length; ++i) {
+            auto c = static_cast<unsigned char>(leaf->data[i]);
+            while (j > 0 && c != static_cast<unsigned char>(pattern[j])) {
+                j = lps[j - 1];
+            }
+            if (c == static_cast<unsigned char>(pattern[j])) ++j;
+            if (j == patternLen) {
+                // Нашли совпадение: вычислим номер строки внутри leaf до начала совпадения.
+                int matchEndIndex = i;
+                int matchStartIndex = matchEndIndex - patternLen + 1;
+                if (matchStartIndex < 0) matchStartIndex = 0; // безопасность
+
+                int localNewlines = 0;
+                // считаем number of '\n' в leaf->data[0 .. matchStartIndex-1]
+                for (int k = 0; k < matchStartIndex && k < leaf->length; ++k) {
+                    if (leaf->data[k] == '\n') ++localNewlines;
+                }
+
+                // итоговый номер строки (0-based)
+                return processedLines + localNewlines;
+            }
+        }
+
+        // Если не нашли в этом листе — аккумулируем все строки из листа и идём дальше.
+        processedLines += leaf->getLineCount();
+        return -1;
+    } else {
+        auto in = static_cast<InternalNode*>(node);
+        int r = -1;
+        if (in->left) {
+            r = findSubstringLineRecursive(in->left, pattern, patternLen, lps, j, processedLines);
+            if (r != -1) return r;
+        }
+        if (in->right) {
+            r = findSubstringLineRecursive(in->right, pattern, patternLen, lps, j, processedLines);
+            if (r != -1) return r;
+        }
+        return -1;
+    }
+}
+
+// Публичная обёртка: возвращает номер строки (0-based) где начинается совпадение,
+// или -1 если не найдено.
+int Tree::findSubstringLine(const char* pattern, int patternLen) const {
+    if (!root || !pattern || patternLen <= 0) return -1;
+
+    // выделяем lps
+    int* lps = nullptr;
+    try {
+        lps = new int[patternLen]; // NOSONAR
+    } catch (...) {
+        // если не удалось выделить память — возвратим ошибку
+        if (lps) delete[] lps; // NOSONAR
+        throw;
+    }
+
+    try {
+        // построим KMP-таблицу (у тебя есть buildKMPTable)
+        buildKMPTable(pattern, patternLen, lps);
+
+        int j = 0;
+        int processedLines = 0;
+        int res = findSubstringLineRecursive(root, pattern, patternLen, lps, j, processedLines);
+
+        delete[] lps; // NOSONAR
+        return res;
+    } catch (...) {
+        if (lps) delete[] lps; // NOSONAR
+        throw;
+    }
+}
+
