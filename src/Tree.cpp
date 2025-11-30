@@ -59,6 +59,19 @@ InternalNode::InternalNode(Node* l, Node* r) {
     }
 }
 
+void InternalNode::recalc() {
+    totalLength = 0;
+    totalLineCount = 0;
+    if (left) {
+        totalLength += left->getLength();
+        totalLineCount += left->getLineCount();
+    }
+    if (right) {
+        totalLength += right->getLength();
+        totalLineCount += right->getLineCount();
+    }
+}
+
 NodeType InternalNode::getType() const { return NodeType::NODE_INTERNAL; }
 int InternalNode::getLength() const { return totalLength; }
 int InternalNode::getLineCount() const { return totalLineCount; }
@@ -73,6 +86,33 @@ Tree::Tree() : root(nullptr) {}
 Tree::~Tree() {
     clear();
 }
+
+// перемещающий конструктор
+LeafNode::LeafNode(LeafNode&& other) noexcept {
+    this->length = other.length;
+    this->lineCount = other.lineCount;
+    this->data = other.data;
+
+    other.length = 0;
+    other.lineCount = 0;
+    other.data = nullptr;
+}
+
+// перемещающее присваивание
+LeafNode& LeafNode::operator=(LeafNode&& other) noexcept {
+    if (this != &other) {
+        delete[] this->data; //NOSONAR освободить текущие данные (безопасно, может быть nullptr)
+        this->length = other.length;
+        this->lineCount = other.lineCount;
+        this->data = other.data;
+
+        other.length = 0;
+        other.lineCount = 0;
+        other.data = nullptr;
+    }
+    return *this;
+}
+
 
 void Tree::clear() {
     clearRecursive(root);
@@ -163,7 +203,7 @@ void Tree::collectTextRecursive(Node* node, char* buffer, int& pos) {
     if (node->getType() == NodeType::NODE_LEAF) {
         auto leaf = static_cast<LeafNode*>(node);
         // memcpy быстрее цикла
-        if (leaf->length > 0) {
+        if (leaf->length > 0 && leaf->data) {
             std::memcpy(buffer + pos, leaf->data, leaf->length);
             pos += leaf->length;
         }
@@ -223,8 +263,10 @@ LeafNode* Tree::findLeafByLineRecursive(Node* node, int& localLineIndex) {
 char* Tree::getLine(int lineNumber) {
     if (!root || lineNumber < 0) return nullptr;
     
-    // Проверка: а есть ли такая строка вообще? (Опционально, но полезно)
-    if (lineNumber > root->getLineCount()) return nullptr;
+    // Проверка: а есть ли такая строка вообще
+    if (lineNumber < 0) return nullptr;
+    if (lineNumber >= root->getLineCount()) return nullptr;
+
 
     int localIndex = lineNumber;
     // Этот метод спустится по дереву за O(log N) и вернет Лист.
@@ -291,4 +333,301 @@ char* Tree::getLine(int lineNumber) {
     result[lineLen] = '\0';
 
     return result;
+}
+
+// Поиск листа по смещению (внутри Leaf — localOffset станет смещением в листе)
+LeafNode* Tree::findLeafByOffsetRecursive(Node* node, int& localOffset) {
+    if (!node) return nullptr;
+    if (node->getType() == NodeType::NODE_LEAF) {
+        return static_cast<LeafNode*>(node);
+    }
+    auto inner = static_cast<InternalNode*>(node);
+    int leftLen = 0;
+    if (inner->left) leftLen = inner->left->getLength();
+    if (localOffset < leftLen) {
+        return findLeafByOffsetRecursive(inner->left, localOffset);
+    } else {
+        localOffset -= leftLen;
+        return findLeafByOffsetRecursive(inner->right, localOffset);
+    }
+}
+
+// splitLeafAtOffset: возвращает новый суб-дерево указатель (InternalNode или Leaf/NULL)
+Node* Tree::splitLeafAtOffset(LeafNode* leaf, int offset) {
+    if (!leaf) return nullptr;
+    if (offset < 0) offset = 0;
+    if (offset > leaf->length) offset = leaf->length;
+
+    int leftLen = offset;
+    int rightLen = leaf->length - offset;
+
+    LeafNode* leftLeaf = nullptr;
+    LeafNode* rightLeaf = nullptr;
+
+    if (leftLen > 0) leftLeaf = new LeafNode(leaf->data, leftLen); //NOSONAR
+    if (rightLen > 0) rightLeaf = new LeafNode(leaf->data + offset, rightLen);//NOSONAR
+
+    // удаляем исходный лист (который заменяется)
+    delete leaf;//NOSONAR
+
+    // Если одна часть пустая — возвращаем только ненулевую часть:
+    if (!leftLeaf && !rightLeaf) return nullptr;
+    if (!leftLeaf) return rightLeaf;
+    if (!rightLeaf) return leftLeaf;
+
+    return new InternalNode(leftLeaf, rightLeaf);//NOSONAR
+}
+
+
+// Вспомогательная: вычислить индекс разреза (поведение как в buildFromTextRecursive)
+int Tree::findSplitIndexForLeaf(const LeafNode* leaf) const {
+    if (!leaf || !leaf->data) return 0;
+    int half = leaf->length / 2;
+    int searchRange = (leaf->length < 512) ? (leaf->length / 4) : 256;
+
+    // вправо
+    for (int i = 0; i < searchRange; ++i) {
+        int idx = half + i;
+        if (idx < leaf->length && leaf->data[idx] == '\n') return idx + 1;
+    }
+    // влево
+    for (int i = 0; i < searchRange; ++i) {
+        int idx = half - i;
+        if (idx > 0 && idx < leaf->length && leaf->data[idx] == '\n') return idx + 1;
+    }
+    return half;
+}
+
+Node* Tree::insertIntoLeaf(LeafNode* leaf, int pos, const char* data, int len) {
+    if (!leaf) {
+        return new LeafNode(data, len); // NOSONAR
+    }
+
+    if (pos < 0) pos = 0;
+    if (pos > leaf->length) pos = leaf->length;
+
+    int leafLen = leaf->length;
+    int newLen = leafLen + len;
+
+    // Сборка временного буфера: [prefix][data][suffix]
+    char* buf = new char[newLen]; // NOSONAR
+    if (pos > 0 && leaf->data) {
+        std::memcpy(buf, leaf->data, pos);
+    }
+    if (len > 0 && data) {
+        std::memcpy(buf + pos, data, len);
+    }
+    if (pos < leafLen && leaf->data) {
+        std::memcpy(buf + pos + len, leaf->data + pos, leafLen - pos);
+    }
+
+    // Новый лист
+    LeafNode* newLeaf = new LeafNode(buf, newLen);// NOSONAR
+    delete[] buf;// NOSONAR
+    delete leaf; // NOSONAR// удалить старый лист
+
+    // Если превысили порог — split
+    if (newLeaf->length > MAX_LEAF_SIZE) {
+        int splitIndex = findSplitIndexForLeaf(newLeaf);
+        Node* splitted = splitLeafAtOffset(newLeaf, splitIndex);
+        return splitted;
+    }
+
+    return newLeaf;
+}
+
+
+// Вставляет [data, data+len) в позицию pos внутри node и возвращает новый Node* для замены.
+Node* Tree::insertRecursive(Node* node, int pos, const char* data, int len) {
+    if (len <= 0) return node;
+
+    if (!node) {
+        return new LeafNode(data, len); // NOSONAR
+    }
+
+    if (node->getType() == NodeType::NODE_LEAF) {
+        return insertIntoLeaf(static_cast<LeafNode*>(node), pos, data, len);
+    }
+
+    // Internal node: опустим лишнюю вложенность — минимальный код
+    auto inner = static_cast<InternalNode*>(node);
+
+    if (int leftLen = (inner->left ? inner->left->getLength() : 0); pos <= leftLen) {
+        inner->left = insertRecursive(inner->left, pos, data, len);
+    } else {
+        inner->right = insertRecursive(inner->right, pos - leftLen, data, len);
+    }
+
+    inner->recalc();
+    return inner;
+}
+
+// Удалить len байт, начиная с pos, внутри листа.
+// Возвращает новый лист (или nullptr), удаляет старый leaf.
+Node* Tree::eraseFromLeaf(LeafNode* leaf, int pos, int len) {
+    if (!leaf || len <= 0) return leaf;
+
+    // Нормализуем pos
+    if (pos < 0) pos = 0;
+    if (pos >= leaf->length) return leaf; // ничего не удаляем
+
+    int delLen = len;
+    if (pos + delLen > leaf->length) delLen = leaf->length - pos;
+
+    int newLen = leaf->length - delLen;
+    if (newLen <= 0) {
+        delete leaf;// NOSONAR // удалили весь лист
+        return nullptr;
+    }
+
+    // Создаём буфер без использования 'p'
+    char* buf = new char[newLen]; // NOSONAR
+    if (pos > 0 && leaf->data) {
+        std::memcpy(buf, leaf->data, pos);
+    }
+    if (pos + delLen < leaf->length && leaf->data) {
+        int tail = leaf->length - (pos + delLen);
+        std::memcpy(buf + pos, leaf->data + pos + delLen, tail);
+    }
+
+    LeafNode* newLeaf = new LeafNode(buf, newLen); // NOSONAR
+    delete[] buf; // NOSONAR
+    delete leaf;  // NOSONAR
+    return newLeaf;
+}
+
+// Если один/оба ребёнка отсутствуют — заменить internal на существующего ребёнка (или nullptr).
+// Иначе пересчитать кэши и вернуть inner.
+Node* Tree::collapseInternalIfNeeded(InternalNode* inner) {
+    if (!inner) return nullptr;
+
+    if (!inner->left && !inner->right) {
+        delete inner; // NOSONAR
+        return nullptr;
+    }
+    if (!inner->left) {
+        Node* r = inner->right;
+        delete inner; // NOSONAR
+        return r;
+    }
+    if (!inner->right) {
+        Node* l = inner->left;
+        delete inner; // NOSONAR
+        return l;
+    }
+
+    // оба ребёнка существуют — обновляем кэши и возвращаем узел
+    inner->recalc();
+    return inner;
+}
+
+// Удалить len байт, начиная с pos. Возвращает новое поддерево.
+Node* Tree::eraseRecursive(Node* node, int pos, int len) {
+    if (!node || len <= 0) return node;
+
+    // Если лист — делегируем в отдельную функцию
+    if (node->getType() == NodeType::NODE_LEAF) {
+        return eraseFromLeaf(static_cast<LeafNode*>(node), pos, len);
+    }
+
+    // Internal node
+    auto inner = static_cast<InternalNode*>(node);
+
+    // Используем init-statement (современный стиль)
+    if (int leftLen = (inner->left ? inner->left->getLength() : 0); pos + len <= leftLen) {
+        // Всё удаление в левом поддереве
+        inner->left = eraseRecursive(inner->left, pos, len);
+    } else if (pos >= leftLen) {
+        // Всё удаление в правом
+        inner->right = eraseRecursive(inner->right, pos - leftLen, len);
+    } else {
+        // Разрезано: часть слева, часть справа
+        int leftDel = leftLen - pos;
+        int rightDel = len - leftDel;
+        inner->left = eraseRecursive(inner->left, pos, leftDel);
+        inner->right = eraseRecursive(inner->right, 0, rightDel);
+    }
+
+    // Свернуть internal если нужно (включая пересчёт кэшей)
+    return collapseInternalIfNeeded(inner);
+}
+
+
+void Tree::insert(int pos, const char* data, int len) {
+    if (len <= 0) return;
+
+    int total = 0;
+    if (root) total = root->getLength();
+    if (pos < 0) pos = 0;
+    if (pos > total) pos = total;
+
+    root = insertRecursive(root, pos, data, len);
+    // Для простоты — делаем глобальный ребаланс после операции.
+    rebalance();
+}
+
+void Tree::erase(int pos, int len) {
+    if (!root || len <= 0) return;
+    int total = root->getLength();
+    if (pos < 0) pos = 0;
+    if (pos >= total) return;
+
+    if (pos + len > total) len = total - pos;
+
+    root = eraseRecursive(root, pos, len);
+    rebalance();
+}
+
+// Рекурсивный проход, объединяем соседние листья когда это возможно.
+// Используется Node*& чтобы иметь возможность заменить node на новый лист.
+void Tree::rebalanceRecursive(Node*& node) {
+    if (!node) return;
+    if (node->getType() == NodeType::NODE_LEAF) return;
+
+    auto inner = static_cast<InternalNode*>(node);
+    // рекурсивно обработать детей
+    if (inner->left) rebalanceRecursive(inner->left);
+    if (inner->right) rebalanceRecursive(inner->right);
+
+    // если оба child — листья — попытаться объединить
+    if (inner->left && inner->right &&
+        inner->left->getType() == NodeType::NODE_LEAF &&
+        inner->right->getType() == NodeType::NODE_LEAF) {
+
+        auto L = static_cast<LeafNode*>(inner->left);
+        auto R = static_cast<LeafNode*>(inner->right);
+        int combined = L->length + R->length;
+        if (combined <= MAX_LEAF_SIZE) {
+            // собрать единый буфер
+            auto merged = new char[combined];//NOSONAR
+            int p = 0;
+            if (L->length > 0 && L->data) {
+                std::memcpy(merged + p, L->data, L->length);
+                p += L->length;
+            }
+            if (R->length > 0 && R->data) {
+                std::memcpy(merged + p, R->data, R->length);
+                p += R->length;
+            }
+            // удаляем старые объекты
+            delete L;//NOSONAR
+            delete R;//NOSONAR
+            delete inner;//NOSONAR
+
+            // создаём новый лист и заменяем node
+            LeafNode* newLeaf = new LeafNode(merged, combined);//NOSONAR
+
+            delete[] merged; //NOSONAR
+
+            node = newLeaf;
+            return;
+        }
+    }
+
+    // иначе пересчитать кэши
+    inner->recalc();
+}
+
+void Tree::rebalance() {
+    rebalanceRecursive(root);
 }

@@ -3,6 +3,7 @@
 
 #include <gtkmm.h>
 #include <string>
+#include "Tree.h"
 
 // Вспомогательная функция для подсчета слов, объявленная здесь, 
 // но определенная в .cpp для инкапсуляции.
@@ -35,6 +36,14 @@ protected:
     void go_to_line_index(int lineIndex0Based);
 
 private:
+    // синхронизация с Tree
+    Tree m_tree;
+    std::string m_last_text;      // байтовая копия текста (UTF-8 bytes)
+    bool m_syncing = false;       // если true — игнорировать изменения буфера (программные обновления)
+    int m_edit_ops_count = 0;     // счетчик операций (для ребаланса)
+    const int REBALANCE_THRESHOLD = 200; // после скольких операций вызывать rebalance()
+
+
     // Элементы пользовательского интерфейса
     Gtk::HeaderBar m_header_bar;
     Gtk::Box m_root{Gtk::Orientation::VERTICAL};

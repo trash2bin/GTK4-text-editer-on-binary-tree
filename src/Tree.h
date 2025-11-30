@@ -27,7 +27,16 @@ struct LeafNode : public Node {
 
     LeafNode(const char* str, int len);
     ~LeafNode() override;
-    
+
+     // запрет копирования
+    LeafNode(const LeafNode&) = delete; 
+     // запрет присваивания копированием
+    LeafNode& operator=(const LeafNode&) = delete;
+
+    // Реализуем перемещающий конструктор и перемещающее присваивание:
+    LeafNode(LeafNode&& other) noexcept;
+    LeafNode& operator=(LeafNode&& other) noexcept;
+
     NodeType getType() const override;
     int getLength() const override;
     int getLineCount() const override;
@@ -47,6 +56,8 @@ struct InternalNode : public Node {
     NodeType getType() const override;
     int getLength() const override;
     int getLineCount() const override;
+
+    void recalc(); // пересчитать totalLength и totalLineCount из детей
 };
 
 class Tree {
@@ -63,6 +74,26 @@ private:
     // Изменяет localLineIndex, приводя его к индексу внутри найденного листа
     LeafNode* findLeafByLineRecursive(Node* node, int& localLineIndex);
 
+    LeafNode* findLeafByOffsetRecursive(Node* node, int& localOffset);
+    Node* splitLeafAtOffset(LeafNode* leaf, int offset);
+
+    Node* insertIntoLeaf(LeafNode* leaf, int pos, const char* data, int len);
+    int findSplitIndexForLeaf(const LeafNode* leaf) const;
+    // Рекурсивные реализации вставки/удаления (возвращают новый Node* для замены в родителе)
+    Node* insertRecursive(Node* node, int pos, const char* data, int len);
+
+    // Удалить len байт в листе, возвращает новый Node* (новый лист или nullptr)
+    Node* eraseFromLeaf(LeafNode* leaf, int pos, int len);
+
+    // Если internal-узел имеет одного или ни одного ребёнка — заменить и удалить internal.
+    // В противном случае пересчитать кэши и вернуть сам inner.
+    Node* collapseInternalIfNeeded(InternalNode* inner);
+
+    Node* eraseRecursive(Node* node, int pos, int len);
+
+    // Ребалансировка
+    void rebalanceRecursive(Node*& node);
+
 public:
     Tree();
     ~Tree();
@@ -74,6 +105,10 @@ public:
     char* toText();
     
     char* getLine(int lineNumber);
+
+    void insert(int pos, const char* data, int len); // публичная обёртка
+    void erase(int pos, int len);// публичная обёртка
+    void rebalance();// публичный вызов ребаланса
 
     Node* getRoot() const;
     void setRoot(Node* newRoot);

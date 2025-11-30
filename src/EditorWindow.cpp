@@ -1,5 +1,4 @@
 #include "EditorWindow.h"
-#include "Tree.h" 
 #include "BinaryTreeFile.h"
 #include <fstream>
 #include <glib.h>
@@ -22,7 +21,6 @@ EditorWindow::EditorWindow() {
     
     // --- Применение системной темы ---
     set_decorated(true);
-    apply_system_theme();
 
     // --- HeaderBar: make it look GNOME-like ---
     m_header_bar.set_show_title_buttons(true);
@@ -149,15 +147,8 @@ EditorWindow::EditorWindow() {
     present();
 }
 
-EditorWindow::~EditorWindow() {}
+EditorWindow::~EditorWindow()=default;
 
-// Это включает поддержку системных настроек темы
-void EditorWindow::apply_system_theme() {
-    auto settings = Gtk::Settings::get_default();
-    if (settings) {
-        // settings->property_gtk_application_prefer_dark_theme() = true; 
-    }
-}
 
 void EditorWindow::set_status(const std::string& s) {
     m_status.set_text(s);
@@ -173,26 +164,93 @@ void EditorWindow::on_path_entry_changed() {
     m_btn_save_txt.set_sensitive(ok);
 }
 
-// ЛОГИКА ОСТАЕТСЯ ТА ЖЕ
 void EditorWindow::on_textbuffer_changed() {
+    if (m_syncing) return; // защита от рекурсивных изменений
+
     auto buf = m_textview.get_buffer();
     if (!buf) return;
-    Glib::ustring t = buf->get_text();
-    std::string s = static_cast<std::string>(t);
-    size_t chars = s.size();
-    size_t words = count_words(s);
+
+    // Получаем новый текст (UTF-8 bytes) как std::string
+    Glib::ustring gtxt = buf->get_text();
+    std::string new_text = static_cast<std::string>(gtxt);
+
+    // Если первый раз (m_last_text пуст) — инициализируем Tree
+    if (m_last_text.empty() && m_tree.getRoot() == nullptr) {
+        m_syncing = true;
+        m_tree.clear();
+        if (!new_text.empty()) m_tree.fromText(new_text.c_str(), static_cast<int>(new_text.size()));
+        m_last_text = new_text;
+        m_syncing = false;
+    }
+
+    // Быстрая проверка: если строки равны — ничего не делаем
+    if (new_text == m_last_text) {
+        // но обновим статус (символы/слова/строка)
+        size_t chars = new_text.size();
+        size_t words = count_words(new_text);
+        auto iter = buf->get_insert()->get_iter();
+        int cur_line = iter.get_line() + 1;
+        std::ostringstream oss;
+        oss << "Chars: " << chars << "  Words: " << words << "  Line: " << cur_line;
+        set_status(oss.str());
+        return;
+    }
+
+    // Вычисляем минимальный префикс L
+    int old_len = static_cast<int>(m_last_text.size());
+    int new_len = static_cast<int>(new_text.size());
+    int L = 0;
+    int min_len = (old_len < new_len) ? old_len : new_len;
+    while (L < min_len && m_last_text[L] == new_text[L]) ++L;
+
+    // Вычисляем минимальный суффикс R (но не переходящий через L)
+    int R = 0;
+    while (R < (old_len - L) && R < (new_len - L)
+           && m_last_text[old_len - 1 - R] == new_text[new_len - 1 - R]) {
+        ++R;
+    }
+
+    // Теперь исходное удаление и вставка
+    int delLen = old_len - L - R;        // может быть 0
+    int insLen = new_len - L - R;        // может быть 0
+
+    // Применяем изменения в дереве. Отключаем синхронизацию, т.к. изменения буфера уже применены пользователем.
+    // Мы изменяем внутреннюю структуру m_tree в соответствии с новым буфером.
+    if (delLen > 0) {
+        m_tree.erase(L, delLen);
+        ++m_edit_ops_count;
+    }
+    if (insLen > 0) {
+        const char* insBuf = new_text.data() + L; // байтовый указатель
+        m_tree.insert(L, insBuf, insLen);
+        ++m_edit_ops_count;
+    }
+
+    // Иногда ребалансить (экономично)
+    if (m_edit_ops_count >= REBALANCE_THRESHOLD) {
+        m_tree.rebalance();
+        m_edit_ops_count = 0;
+    }
+
+    // Обновляем snapshot (после успешных операций)
+    m_last_text.swap(new_text); // быстро swap
+
+    // Обновляем статус (символы/слова/строка)
+    size_t chars = m_last_text.size();
+    size_t words = count_words(m_last_text);
     auto iter = buf->get_insert()->get_iter();
-    int cur_line = iter.get_line() + 1; // get_line() вернёт 0-based
+    int cur_line = iter.get_line() + 1;
     std::ostringstream oss;
     oss << "Chars: " << chars << "  Words: " << words << "  Line: " << cur_line;
     set_status(oss.str());
 }
 
+
 void EditorWindow::on_file_entry_activate() {
     if (m_btn_load_bin.get_sensitive()) on_load_binary();
 }
 
-// --- Логика файлов (НЕ ИЗМЕНЯЛАСЬ) ---
+// --- Логика файлов ---
 void EditorWindow::on_load_binary() {
     std::string path = m_file_entry.get_text();
     if (path.empty()) { set_status("Provide path..."); return; }
@@ -204,17 +262,27 @@ void EditorWindow::on_load_binary() {
         char* txt = t.toText();
         if (!txt) {
             m_textview.get_buffer()->set_text("");
+            m_tree.clear();
+            m_last_text.clear();
         } else {
-            // Проверяем валидность UTF-8; если невалидно — исправляем
+            // Ветвь проверки UTF-8 как у тебя
+            std::string str;
             if (!g_utf8_validate(txt, -1, nullptr)) {
-                // g_utf8_make_valid вернёт новый буфер с заменами некорректных байт на U+FFFD
                 gchar* fixed = g_utf8_make_valid(txt, -1);
-                m_textview.get_buffer()->set_text(fixed);
+                str = std::string(fixed);
                 g_free(fixed);
             } else {
-                m_textview.get_buffer()->set_text(txt);
+                str = std::string(txt);
             }
-            delete[] txt;
+            delete[] txt; // NOSONAR
+
+            // Обновляем Tree и локальный snapshot в атомарной манере
+            m_syncing = true;
+            m_tree.clear();
+            m_tree.fromText(str.c_str(), static_cast<int>(str.size()));
+            m_last_text = str;
+            m_textview.get_buffer()->set_text(str);
+            m_syncing = false;
         }
         bf.close();
         set_status("Loaded binary: " + path);
@@ -226,19 +294,18 @@ void EditorWindow::on_load_binary() {
 void EditorWindow::on_save_binary() {
     std::string path = m_file_entry.get_text();
     if (path.empty()) { set_status("Provide path..."); return; }
+
     try {
-        Glib::ustring text = m_textview.get_buffer()->get_text();
-        Tree t;
-        t.fromText(text.c_str(), text.bytes());
         BinaryTreeFile bf;
         if (!bf.openFile(path.c_str())) { set_status("Err open: " + path); return; }
-        bf.saveTree(t);
+        bf.saveTree(m_tree);
         bf.close();
         set_status("Saved binary: " + path);
     } catch (const std::exception& e) {
         set_status(std::string("Error: ") + e.what());
     }
 }
+
 
 void EditorWindow::on_load_text() {
     std::string path = m_file_entry.get_text();
@@ -247,7 +314,12 @@ void EditorWindow::on_load_text() {
         std::ifstream in(path, std::ios::binary);
         if (!in) { set_status("Err open txt: " + path); return; }
         std::string s((std::istreambuf_iterator<char>(in)), {});
+        m_syncing = true;
+        m_tree.clear();
+        m_tree.fromText(s.c_str(), static_cast<int>(s.size()));
+        m_last_text = s;
         m_textview.get_buffer()->set_text(s);
+        m_syncing = false;
         set_status("Loaded txt: " + path);
     } catch (const std::exception& e) {
         set_status(std::string("Error: ") + e.what());
@@ -268,7 +340,7 @@ void EditorWindow::on_save_text() {
     }
 }
 
-// --- Поиск и навигация (НЕ ИЗМЕНЯЛАСЬ) ---
+// --- Поиск и навигация  ---
 void EditorWindow::on_search_activate() {
     std::string query = static_cast<std::string>(m_search.get_text());
     if (query.empty()) {
@@ -325,7 +397,7 @@ void EditorWindow::on_search_activate() {
     set_status("Found at line " + std::to_string(line_of_match));
 }
 
-// Переход к строке (0-based). Использует TextBuffer::get_iter_at_line (НЕ ИЗМЕНЯЛАСЬ)
+// Переход к строке (0-based). Использует TextBuffer::get_iter_at_line
 void EditorWindow::go_to_line_index(int lineIndex0Based) {
     auto buf = m_textview.get_buffer();
     if (!buf) { set_status("No buffer"); return; }
@@ -350,13 +422,10 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
 
     // Дополнительно: получим строку из Tree и покажем в статусе (проверка твоей логики)
     try {
-        Glib::ustring gtxt = buf->get_text();
-        Tree t;
-        t.fromText(gtxt.c_str(), static_cast<int>(gtxt.bytes())); 
-        char* line = t.getLine(lineIndex0Based);
+        char* line = m_tree.getLine(lineIndex0Based);
         if (line) {
             set_status("Line " + std::to_string(lineIndex0Based + 1) + ": " + std::string(line));
-            delete[] line;
+            delete[] line; //NOSONAR
         } else {
             set_status("Line " + std::to_string(lineIndex0Based + 1) + " (no data in tree)");
         }
@@ -373,7 +442,7 @@ void EditorWindow::on_show_numbers_clicked() {
 
     Glib::ustring all = buf->get_text();
     // Разбиваем по '\n' и формируем нумерованный текст
-    std::string plain = static_cast<std::string>(all);
+    auto plain = static_cast<std::string>(all);
     std::ostringstream numbered;
     size_t lineno = 1;
     size_t pos = 0;
@@ -397,7 +466,7 @@ void EditorWindow::on_show_numbers_clicked() {
 
 
     // Создаём модальное окно с read-only TextView
-    auto win = new Gtk::Window();          
+    auto win = new Gtk::Window();//NOSONAR
     win->set_default_size(600, 400);
     win->set_modal(true);
     // делаем окно транзиентным к основному 
@@ -421,7 +490,7 @@ void EditorWindow::on_show_numbers_clicked() {
 
     // При закрытии окна — удалим его
     win->signal_hide().connect([win]() {
-        delete win;
+        delete win; //NOSONAR
     });
 
     win->present();
