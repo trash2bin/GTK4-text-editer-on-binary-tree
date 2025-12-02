@@ -5,6 +5,21 @@
 #include <fstream>
 #include <cstdint>
 
+// Формат узла (leaf):
+// [1 byte type == NODE_LEAF]
+// [int32 length]        -- количество байт данных
+// [int32 lineCount]     -- целый счётчик (кол-во строк / кэш)
+// [length bytes]        -- данные (без '\0')
+//
+// Формат internal:
+// [1 byte type == NODE_INTERNAL]
+// [int64 leftOffset]
+// [int64 rightOffset]
+//
+// Заголовок файла:
+// [4 bytes magic "TREE"]
+// [uint32 version]
+// [int64 rootOffset]    -- OFFSET_NONE (-1) означает пустое дерево
 class BinaryTreeFile : public std::fstream {
 private:
     // Имя файла, чтобы можно было усечь/переоткрыть при сохранении

@@ -23,7 +23,7 @@ struct Node {
 
 struct LeafNode : public Node {
     int length;
-    int lineCount; // Кэшированное значение
+    int lineCount; // Количество строк-1 (\n)
     char* data;
 
     LeafNode(const char* str, int len);

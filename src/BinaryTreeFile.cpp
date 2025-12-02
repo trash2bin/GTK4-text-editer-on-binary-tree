@@ -74,20 +74,24 @@ std::int64_t BinaryTreeFile::writeNodeRecursive(Node* node) {
     if (!good()) throw BinaryTreeFileError("I/O error writing node type");
 
     if (node->getType() == NodeType::NODE_LEAF) {
-        // 2. Лист: длина + данные
+        // 2. Лист: длина + lineCount + данные
         auto leaf = static_cast<LeafNode*>(node);
+
+        // length (int32)
         write_le_int32(leaf->length);
+
+        // lineCount (int32) -- вот что мы добавляем
+        write_le_int32(leaf->lineCount);
+
+        // payload (raw bytes)
         if (leaf->length > 0) {
             write(leaf->data, leaf->length);
             if (!good()) throw BinaryTreeFileError("I/O error writing leaf data");
         }
     } else {
-        // 2. Внутренний узел: смещения детей
-        // МЫ БОЛЬШЕ НЕ ПИШЕМ totalLength И totalLineCount,
-        // так как они вычисляются при загрузке конструктором InternalNode.
+        // Внутренний узел: смещения детей
         write_le_int64(leftOff);
         write_le_int64(rightOff);
-        // (Удалено: write_le_int32(inner->lineCount);)
     }
     return currentPos;
 }
@@ -129,35 +133,49 @@ void BinaryTreeFile::saveTree(const Tree& tree) {
 // --- Загрузка ---
 
 Node* BinaryTreeFile::readLeafNodeAt(std::int64_t offset, std::int64_t fileSize) {
-    // Проверка, что хватает места для типа + длины (1 + 4 байта)
-    if (std::int64_t minNeeded = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t));
+    // Проверка: требуется минимум 1 (type) + 4 (length) + 4 (lineCount)
+    if (std::int64_t minNeeded = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t)) + static_cast<std::int64_t>(sizeof(std::int32_t));
         minNeeded > fileSize) {
-        throw BinaryTreeFileError("Corrupt file: not enough bytes for leaf length");
+        throw BinaryTreeFileError("Corrupt file: not enough bytes for leaf header");
     }
 
+    // В позиции после типа (функция вызывается так, что позиция seekg установлена уже на offset+1)
+    // читаем длину листа
     std::int32_t len = read_le_int32();
     if (len < 0) throw BinaryTreeFileError("Corrupt file: negative leaf length");
 
+    // читаем сохранённый lineCount
+    std::int32_t lines = read_le_int32();
+    if (lines < 0) throw BinaryTreeFileError("Corrupt file: negative leaf lineCount");
+
     // Проверка, что данные листа влезают в файл
-    if (std::int64_t needed = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t)) + static_cast<std::int64_t>(len);
+    if (std::int64_t needed = offset + 1 + static_cast<std::int64_t>(sizeof(std::int32_t)) + static_cast<std::int64_t>(sizeof(std::int32_t)) + static_cast<std::int64_t>(len);
         needed > fileSize) {
         throw BinaryTreeFileError("Corrupt file: leaf data exceeds file size");
     }
 
-    char* buf = new char[len]; // NOSONAR
+    char* buf = nullptr;
     if (len > 0) {
+        buf = new char[len]; // NOSONAR
         read(buf, static_cast<std::streamsize>(len));
         if (gcount() != static_cast<std::streamsize>(len) || !good()) {
-            delete[] buf; // NOSONAR
+            delete[] buf; //NOSONAR
             throw BinaryTreeFileError("I/O error reading leaf data");
         }
     }
 
-    // LeafNode ctor теперь сам посчитает lineCount, используя данные из buf.
-    Node* node = new LeafNode(buf, len); // NOSONAR
-    delete[] buf; // NOSONAR
-    return node;
+    // Создаём лист — предполагается, что конструктор LeafNode копирует буфер
+    LeafNode* leaf = new LeafNode(buf, len); // NOSONAR
+
+    // Устанавливаем явно сохранённый lineCount (перезапишет, если конструктор сам считал)
+    leaf->lineCount = lines;
+
+    // Освобождаем временный буфер (если он был скопирован в LeafNode)
+    if (buf) { delete[] buf; buf = nullptr; } //NOSONAR
+
+    return leaf;
 }
+
 
 Node* BinaryTreeFile::readInternalNodeAt(std::int64_t offset, std::int64_t fileSize) {
     // Внутренний узел теперь содержит только 1 байт типа + 2 * int64 (смещения детей)
@@ -215,7 +233,9 @@ Node* BinaryTreeFile::readNodeRecursive(std::int64_t offset, std::int64_t fileSi
 
 
 void BinaryTreeFile::loadTree(Tree& tree) {
-    if (!is_open()) return;
+    if (!is_open()){ 
+        throw BinaryTreeFileError("file not open");
+        return;}
 
     tree.clear();
 
