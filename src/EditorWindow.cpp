@@ -1,4 +1,5 @@
 #include "EditorWindow.h"
+#include "CustomTextView.h"
 #include "BinaryTreeFile.h"
 #include <fstream>
 #include <glib.h>
@@ -104,11 +105,12 @@ EditorWindow::EditorWindow() {
     
     text_card.set_child(m_scrolled);
     
-    m_textview.set_wrap_mode(Gtk::WrapMode::WORD_CHAR);
-    m_textview.set_left_margin(5); 
-    m_textview.set_right_margin(5);
-    
-    m_scrolled.set_child(m_textview);
+    // Используем наш кастомный виджет вместо Gtk::TextView
+    m_custom_view.set_can_focus(true);
+    m_scrolled.set_child(m_custom_view);
+
+    // Привязываем дерево к кастомному виду
+    m_custom_view.set_tree(&m_tree);
 
     // --- Статус бар ---
     auto status_box = Gtk::Box(Gtk::Orientation::HORIZONTAL, 8);
@@ -134,15 +136,14 @@ EditorWindow::EditorWindow() {
     m_file_entry.signal_changed().connect(sigc::mem_fun(*this, &EditorWindow::on_path_entry_changed));
     on_path_entry_changed(); 
 
-    if (auto buf = m_textview.get_buffer()) {
-        buf->signal_changed().connect(sigc::mem_fun(*this, &EditorWindow::on_textbuffer_changed));
-    }
-
     m_file_entry.signal_activate().connect(sigc::mem_fun(*this, &EditorWindow::on_file_entry_activate));
     
     set_default_size(950, 700);
 
     present();
+
+    m_custom_view.grab_focus();
+
 }
 
 EditorWindow::~EditorWindow()=default;
@@ -162,82 +163,6 @@ void EditorWindow::on_path_entry_changed() {
     m_btn_save_txt.set_sensitive(ok);
 }
 
-void EditorWindow::on_textbuffer_changed() {
-    if (m_syncing) return; // защита от рекурсивных изменений
-
-    auto buf = m_textview.get_buffer();
-    if (!buf) return;
-
-    // Получаем новый текст (UTF-8 bytes) как std::string
-    Glib::ustring gtxt = buf->get_text();
-    auto new_text = static_cast<std::string>(gtxt);
-
-    // Если первый раз (m_last_text пуст) — инициализируем Tree
-    if (m_last_text.empty() && m_tree.getRoot() == nullptr) {
-        m_syncing = true;
-        m_tree.clear();
-        if (!new_text.empty()) m_tree.fromText(new_text.c_str(), static_cast<int>(new_text.size()));
-        m_last_text = new_text;
-        m_syncing = false;
-    }
-
-    // Быстрая проверка: если строки равны — ничего не делаем
-    if (new_text == m_last_text) {
-        // но обновим статус (символы/слова/строка)
-        size_t chars = new_text.size();
-        size_t words = count_words(new_text);
-        auto iter = buf->get_insert()->get_iter();
-        int cur_line = iter.get_line() + 1;
-        std::ostringstream oss;
-        oss << "Chars: " << chars << "  Words: " << words << "  Line: " << cur_line;
-        set_status(oss.str());
-        return;
-    }
-
-    // Вычисляем минимальный префикс L
-    auto old_len = static_cast<int>(m_last_text.size());
-    auto new_len = static_cast<int>(new_text.size());
-    int L = 0;
-    int min_len = (old_len < new_len) ? old_len : new_len;
-    while (L < min_len && m_last_text[L] == new_text[L]) ++L;
-
-    // Вычисляем минимальный суффикс R (но не переходящий через L)
-    int R = 0;
-    while (R < (old_len - L) && R < (new_len - L)
-           && m_last_text[old_len - 1 - R] == new_text[new_len - 1 - R]) {
-        ++R;
-    }
-
-    // Теперь исходное удаление и вставка
-    int delLen = old_len - L - R;        // может быть 0
-    int insLen = new_len - L - R;        // может быть 0
-
-    // Применяем изменения в дереве. Отключаем синхронизацию, т.к. изменения буфера уже применены пользователем.
-    // Мы изменяем внутреннюю структуру m_tree в соответствии с новым буфером.
-    if (delLen > 0) {
-        m_tree.erase(L, delLen);
-        ++m_edit_ops_count;
-    }
-    if (insLen > 0) {
-        const char* insBuf = new_text.data() + L; // байтовый указатель
-        m_tree.insert(L, insBuf, insLen);
-        ++m_edit_ops_count;
-    }
-
-    // Обновляем snapshot (после успешных операций)
-    m_last_text.swap(new_text); // быстро swap
-
-    // Обновляем статус (символы/слова/строка)
-    size_t chars = m_last_text.size();
-    size_t words = count_words(m_last_text);
-    auto iter = buf->get_insert()->get_iter();
-    int cur_line = iter.get_line() + 1;
-    std::ostringstream oss;
-    oss << "Chars: " << chars << "  Words: " << words << "  Line: " << cur_line;
-    set_status(oss.str());
-}
-
-
 void EditorWindow::on_file_entry_activate() {
     if (m_btn_load_bin.get_sensitive()) on_load_binary();
 }
@@ -253,10 +178,18 @@ void EditorWindow::on_load_binary() {
         m_tree.clear();        
         bf.loadTree(m_tree);
 
-        m_last_text = m_tree.toText();
+        // Обновление представления из дерева
+        m_custom_view.reload_from_tree();
 
-        // Обновление буфера TextView
-        m_textview.get_buffer()->set_text(m_last_text);
+        // Обновляем snapshot m_last_text safely
+        {
+            char* raw = m_tree.toText();
+            if (raw) { m_last_text.assign(raw); delete[] raw; }
+            else m_last_text.clear();
+        }
+
+        // установить фокус на наш виджет (необязательно)
+        m_custom_view.grab_focus();
 
         bf.close();
         set_status("Loaded binary: " + path);
@@ -303,9 +236,9 @@ void EditorWindow::on_load_text() {
             m_tree.fromText(file_text.c_str(), static_cast<int>(file_text.size()));
         }
         m_last_text = file_text;
+        m_custom_view.reload_from_tree();
+        m_custom_view.grab_focus();
 
-        // Обновление буфера TextView
-        m_textview.get_buffer()->set_text(file_text);
         m_syncing = false;
 
         set_status("Loaded txt: " + path);
@@ -362,9 +295,9 @@ void EditorWindow::on_search_activate() {
     // --- Поиск по номеру строки (1-based) ---
     bool is_number = true;
     for (char c : queryStr) {
-        if (!std::isdigit(static_cast<unsigned char>(c))) { 
-            is_number = false; 
-            break; 
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            is_number = false;
+            break;
         }
     }
 
@@ -385,9 +318,6 @@ void EditorWindow::on_search_activate() {
     }
 
     // --- Текстовый поиск через дерево (возвращает номер строки) ---
-    auto buf = m_textview.get_buffer();
-    if (!buf) { set_status("No buffer"); return; }
-
     const char* pattern = queryStr.c_str();
     auto patternLen = static_cast<int>(queryStr.size());
 
@@ -405,55 +335,40 @@ void EditorWindow::on_search_activate() {
         return;
     }
     std::string lineStr(lineBuf);
-    delete[] lineBuf;//NOSONAR // освобождаем, как требует контракт getLine
+    delete[] lineBuf; // NOSONAR
 
-    // Локально ищем шаблон внутри строки (байтовый поиск корректен для UTF-8 точного совпадения)
+    // Найдём байтовую позицию совпадения внутри строки (байтовый поиск корректен для UTF-8)
     std::size_t localBytePos = lineStr.find(queryStr);
     if (localBytePos == std::string::npos) {
-        // Технически это маловероятно, но на всякий случай — сообщаем об ошибке.
         set_status("Found line, but substring not found inside it (unexpected)");
         return;
     }
 
-    // Преобразуем байтовый оффсет внутри строки в количество UTF-8 символов (codepoints)
-    // g_utf8_strlen подсчитывает кодовые точки в первых `localBytePos` байтах.
-    auto charOffsetInLine = g_utf8_strlen(lineStr.c_str(), static_cast<int>(localBytePos));
-
-    // Длина шаблона в символах (для корректного выделения)
-    auto patternCharLen = g_utf8_strlen(pattern, patternLen);
-
-    // Получим итератор на начало строки в буфере
-    Gtk::TextBuffer::iterator it_line_start = buf->get_iter_at_line(lineNumber);
-
-    // Продвинем итератор на charOffsetInLine символов (используем цикл, чтобы быть совместимым)
-    Gtk::TextBuffer::iterator it_start = it_line_start;
-    for (int k = 0; k < charOffsetInLine; ++k) {
-        if (!it_start) break;
-        it_start.forward_char();
+    // Устанавливаем курсор в CustomTextView на позицию начала совпадения
+    int lineStart = m_tree.getOffsetForLine(lineNumber);
+    int bytePos = lineStart + static_cast<int>(localBytePos);
+    m_custom_view.set_cursor_byte_offset(bytePos);
+    m_custom_view.select_range_bytes(bytePos, patternLen);
+    m_custom_view.scroll_to_byte_offset(bytePos);
+    m_custom_view.grab_focus(); // не обязательно, но удобно
+    
+    // Прокрутка: установим вертикальную позицию ScrolledWindow по номеру строки
+    if (auto vadj = m_scrolled.get_vadjustment()) {
+        int y = lineNumber * m_custom_view.get_line_height_for_ui();
+        auto maxv = static_cast<int>(vadj->get_upper() - vadj->get_page_size());
+        if (y < 0) y = 0;
+        if (y > maxv) y = maxv;
+        vadj->set_value(y);
     }
-
-    // Создаём it_end и продвигаем на длину шаблона (в символах)
-    Gtk::TextBuffer::iterator it_end = it_start;
-    for (int k = 0; k < patternCharLen; ++k) {
-        if (!it_end) break;
-        it_end.forward_char();
-    }
-
-    // Выделяем и скроллим
-    buf->select_range(it_start, it_end);
-    m_textview.scroll_to(it_start, 0.0);
 
     // Показываем строку в статусе (1-based)
     set_status("Found at line " + std::to_string(lineNumber + 1));
 }
 
 
-
 void EditorWindow::go_to_line_index(int lineIndex0Based) {
-    auto buf = m_textview.get_buffer();
-    if (!buf) { set_status("No buffer"); return; }
-
-    int total_lines = buf->get_line_count();
+    // Проверяем диапазон на стороне дерева
+    auto total_lines = static_cast<int>(m_tree.getTotalLineCount());
     if (lineIndex0Based < 0 || lineIndex0Based >= total_lines) {
         std::ostringstream oss;
         oss << "Line out of range (1.." << total_lines << ")";
@@ -461,22 +376,27 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
         return;
     }
 
-    // Получаем итераторы начала и конца строки
-    Gtk::TextBuffer::iterator it_start = buf->get_iter_at_line(lineIndex0Based);
-    Gtk::TextBuffer::iterator it_end;
-    if (lineIndex0Based + 1 < total_lines) it_end = buf->get_iter_at_line(lineIndex0Based + 1);
-    else it_end = buf->end();
+    // Получаем байтовый оффсет начала строки в дереве и ставим курсор
+    int lineStart = m_tree.getOffsetForLine(lineIndex0Based);
+    m_custom_view.set_cursor_byte_offset(lineStart);
 
-    // Выделяем диапазон и скроллим
-    buf->select_range(it_start, it_end);
-    m_textview.scroll_to(it_start, 0.0);
+    // Скроллим ScrolledWindow к нужной строке
+    if (auto vadj = m_scrolled.get_vadjustment()) {
+        int y = lineIndex0Based * m_custom_view.get_line_height_for_ui();
+        auto maxv = static_cast<int>(vadj->get_upper() - vadj->get_page_size());
+        if (y < 0) y = 0;
+        if (y > maxv) y = maxv;
+        vadj->set_value(y);
+    }
 
-    // Дополнительно: получим строку из Tree и покажем в статусе (проверка твоей логики)
+    // Дополнительно: покажем строку в статусе (берём текст из дерева)
     try {
         char* line = m_tree.getLine(lineIndex0Based);
         if (line) {
-            set_status("Line " + std::to_string(lineIndex0Based + 1) + ": " + std::string(line));
-            delete[] line; //NOSONAR
+            // Показываем небольшую часть строки в статусе (без перевода строки)
+            std::string shown(line);
+            delete[] line; // NOSONAR
+            set_status("Line " + std::to_string(lineIndex0Based + 1) + ": " + shown);
         } else {
             set_status("Line " + std::to_string(lineIndex0Based + 1) + " (no data in tree)");
         }
@@ -486,7 +406,6 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
         set_status("Memory allocation failed while getting line");
     }
 }
-
 
 
 // Показать окно с нумерацией строк (readonly)

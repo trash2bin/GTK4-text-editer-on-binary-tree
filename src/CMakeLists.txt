@@ -46,6 +46,7 @@ target_compile_options(tree_lib PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(editor
     main.cpp
     EditorWindow.cpp
+    CustomTextView.cpp
 )
 
 # include dirs от pkg-config (SYSTEM, чтобы не показывать warning-ы из внешнего кода)

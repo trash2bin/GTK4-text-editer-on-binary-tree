@@ -4,6 +4,7 @@
 #include <gtkmm.h>
 #include <string>
 #include "Tree.h"
+#include "CustomTextView.h"
 
 // Вспомогательная функция для подсчета слов, объявленная здесь, 
 // но определенная в .cpp для инкапсуляции.
@@ -55,7 +56,7 @@ private:
     Gtk::SearchEntry m_search;                 
     Gtk::Button m_btn_show_numbers{"#️⃣ Lines"};
     Gtk::ScrolledWindow m_scrolled;
-    Gtk::TextView m_textview;
+    CustomTextView m_custom_view;
     Gtk::Label m_status;
 };
 
