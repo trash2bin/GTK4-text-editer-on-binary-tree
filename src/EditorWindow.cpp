@@ -490,21 +490,33 @@ void EditorWindow::go_to_line_index(int lineIndex0Based) {
 
 
 // Показать окно с нумерацией строк (readonly)
+// Более эффективная версия on_show_numbers: считываем весь текст один раз
 void EditorWindow::on_show_numbers_clicked() {
     if (!m_tree.getRoot()) { set_status("Tree empty"); return; }
 
-    std::ostringstream numbered;
     size_t total_lines = m_tree.getTotalLineCount();
-    for (size_t i = 0; i < total_lines; ++i) {
-        int start = m_tree.getOffsetForLine(static_cast<int>(i));
-        int end   = (i + 1 < total_lines) ? m_tree.getOffsetForLine(static_cast<int>(i) + 1)
-                                          : m_tree.getRoot()->getLength();
-        char* lineBuf = m_tree.getTextRange(start, end - start);
-        numbered << (i + 1) << ": " << std::string(lineBuf, end - start);
-        delete[] lineBuf; //NOSONAR
+    if (total_lines == 0) {
+        set_status("Tree has no lines");
+        return;
     }
 
-    // Создаём модальное окно с read-only TextView
+    // Получаем весь текст один раз (getTextRange на весь диапазон)
+    int total_len = m_tree.getRoot()->getLength();
+    char* all = m_tree.getTextRange(0, total_len); // владелец — мы
+    if (!all) { set_status("Failed to extract text from tree"); return; }
+
+    std::ostringstream numbered;
+
+    for (size_t i = 0; i < total_lines; ++i) {
+        int start = m_tree.getOffsetForLine(static_cast<int>(i));
+        int end   = (i + 1 < total_lines) ? m_tree.getOffsetForLine(static_cast<int>(i) + 1) : total_len;
+        int len = end - start;
+        // безопасно создаём строку из байт (не предполагаем \0)
+        numbered << (i + 1) << ": " << std::string(all + start, static_cast<size_t>(len));
+    }
+    delete[] all; //NOSONAR
+
+    // окно — как раньше
     auto win = new Gtk::Window(); //NOSONAR
     win->set_default_size(600, 400);
     win->set_modal(true);
@@ -517,7 +529,7 @@ void EditorWindow::on_show_numbers_clicked() {
     auto tv = Gtk::make_managed<Gtk::TextView>();
     tv->set_editable(false);
     tv->set_wrap_mode(Gtk::WrapMode::NONE);
-    tv->get_style_context()->add_class("monospace"); 
+    tv->get_style_context()->add_class("monospace");
     sc->set_child(*tv);
     win->set_child(*sc);
 
