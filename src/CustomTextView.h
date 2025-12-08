@@ -43,15 +43,22 @@ protected:
     void on_gesture_released(int /*n_press*/, double /*x*/, double /*y*/);
 
 private:
-    void ensure_text_cache();
-    void recompute_metrics();
+    // Глобальные константы отступов
+    static constexpr int LEFT_MARGIN = 6;
+    static constexpr int TOP_MARGIN = 4;
+    
     void update_size_request();
-    int measure_prefix_pixels_in_line(const std::string& line, size_t bytePrefixLen);
+    void recompute_metrics();
+
+    // Получает текст конкретной строки из дерева и измеряет X
+    int get_byte_offset_at_xy(double x, double y);
+    
+    // Вспомогательная функция для бинарного поиска строки по байтовому оффсету
+    // (так как в Tree нет прямого метода getLineByOffset, но есть getOffsetForLine)
+    int find_line_index_by_byte_offset(int byteOffset) const;
 
 private:
     Tree* m_tree{nullptr};
-    std::string m_textCache;
-    std::vector<int> m_lineOffsets;
 
     Pango::FontDescription m_font_desc;
     int m_line_height{16};
