@@ -426,7 +426,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         return;
     }
 
-    // 1. Рисуем фон
+    // Рисуем фон
     cr->set_source_rgb(0.3, 0.3, 0.3); // Или цвет из темы
     cr->paint();
 
@@ -440,7 +440,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         return;
     }
 
-    // 2. Определяем видимую область (Culling)
+    // Определяем видимую область (Culling)
     double clip_x1, clip_y1, clip_x2, clip_y2;
     cr->get_clip_extents(clip_x1, clip_y1, clip_x2, clip_y2);
 
@@ -459,7 +459,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     Gdk::RGBA text_color("black");
     Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.4); // Выделение
 
-    // 3. Цикл ТОЛЬКО по видимым строкам
+    // Цикл ТОЛЬКО по видимым строкам
     for (int i = first_line; i < last_line; ++i) {
         // === МАГИЯ ДЕРЕВА ===
         // Получаем текст только одной строки.
@@ -522,12 +522,12 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
             layout->set_font_description(m_font_desc);
             
             cr->move_to(LEFT_MARGIN, y_pos);
-            cr->set_source_rgb(0,0,0);
+            cr->set_source_rgb(1,1,1);
             pango_cairo_show_layout(cr->cobj(), layout->gobj());
         }
     }
 
-    // 4. Рисуем курсор
+    // Рисуем курсор
     // Для оптимизации рисуем только если курсор попадает в видимые строки
     if (m_show_caret && m_cursor_byte_offset >= 0) {
         int cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
@@ -567,17 +567,17 @@ int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     if (!m_tree) return 0;
     if (m_tree->isEmpty()) return 0;
     
-    // 1. Какая это строка визуально?
+    //  Какая это строка визуально?
     int lineIdx = static_cast<int>((y - TOP_MARGIN) / m_line_height);
     int total = m_tree->getTotalLineCount();
     
     if (lineIdx < 0) lineIdx = 0;
     if (lineIdx >= total) lineIdx = total - 1;
 
-    // 2. Получаем начало строки из дерева
+    // Получаем начало строки из дерева
     int lineStartOffset = m_tree->getOffsetForLine(lineIdx);
     
-    // 3. Получаем текст строки для измерения Pango
+    // Получаем текст строки для измерения Pango
     char* rawLine = m_tree->getLine(lineIdx);
     if (!rawLine) return lineStartOffset;
     
@@ -587,7 +587,7 @@ int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     // но если строка пустая (только \n), lineStr станет "", что ок.
     if (!lineStr.empty() && lineStr.back() == '\n') lineStr.pop_back();
 
-    // 4. Спрашиваем Pango: какой байт соответствует X?
+    // Спрашиваем Pango: какой байт соответствует X?
     auto layout = create_pango_layout(lineStr);
     layout->set_font_description(m_font_desc);
     

@@ -54,7 +54,7 @@ private:
     Gtk::Button m_btn_load_txt;
     Gtk::Button m_btn_save_txt;
     Gtk::SearchEntry m_search;                 
-    Gtk::Button m_btn_show_numbers{"#️⃣ Lines"};
+    Gtk::Button m_btn_show_numbers{"#️Lines"};
     Gtk::ScrolledWindow m_scrolled;
     CustomTextView m_custom_view;
     Gtk::Label m_status;

@@ -66,10 +66,10 @@ EditorWindow::EditorWindow() {
     file_box.append(m_file_entry);
 
     // --- Кнопки  ---
-    m_btn_load_bin.set_label("📂 Load Binary");
-    m_btn_save_bin.set_label("💾 Save Binary");
-    m_btn_load_txt.set_label("📄 Load Text");
-    m_btn_save_txt.set_label("✏️ Save Text");
+    m_btn_load_bin.set_label("Load Binary");
+    m_btn_save_bin.set_label("Save Binary");
+    m_btn_load_txt.set_label("Load Text");
+    m_btn_save_txt.set_label("Save Text");
 
     // CSS классы сохранены, чтобы системная тема их подхватила
     m_btn_load_bin.get_style_context()->add_class("suggested-action");
@@ -120,7 +120,7 @@ EditorWindow::EditorWindow() {
     status_box.set_margin_end(8);
 
     Gtk::Label status_icon;
-    status_icon.set_text("💾");
+    status_icon.set_text("(;");
     status_box.append(status_icon);
 
     m_status.set_text("Ready");
@@ -436,7 +436,7 @@ void EditorWindow::on_show_numbers_clicked() {
 
     // Получаем весь текст один раз (getTextRange на весь диапазон)
     int total_len = m_tree.getRoot()->getLength();
-    char* all = m_tree.getTextRange(0, total_len); // владелец — мы
+    char* all = m_tree.getTextRange(0, total_len); 
     if (!all) { set_status("Failed to extract text from tree"); return; }
 
     std::ostringstream numbered;
@@ -450,7 +450,7 @@ void EditorWindow::on_show_numbers_clicked() {
     }
     delete[] all; //NOSONAR
 
-    // окно — как раньше
+    // окно
     auto win = new Gtk::Window(); //NOSONAR
     win->set_default_size(600, 400);
     win->set_modal(true);

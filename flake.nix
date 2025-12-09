@@ -7,7 +7,7 @@
 
   outputs = { nixpkgs, ... }:
   let
-    system = "x86_64-linux";
+    system = "aarch64-darwin";
     pkgs = import nixpkgs { inherit system; };
   in
   {
@@ -18,6 +18,7 @@
         ninja
         gnumake      # make
         pkg-config
+        fontconfig
       ];
 
       # Компилятор/линкер/архиватор и отладка
@@ -28,7 +29,21 @@
         clang-tools          # опционально: clang-tidy/clang-format
         gtkmm4
         libsigcxx
+        noto-fonts
+        noto-fonts-color-emoji
+        liberation_ttf
       ];
+
+    # Настройка Fontconfig для поиска системных шрифтов macOS
+    shellHook = ''
+      export PANGOCAIRO_BACKEND=fc
+      export FONTCONFIG_PATH=${pkgs.fontconfig.out}/etc/fonts
+      export FONTCONFIG_FILE=${pkgs.fontconfig.out}/etc/fonts/fonts.conf
+      
+      # Добавляем пути к системным шрифтам macOS
+      export FONTCONFIG_PATH=$FONTCONFIG_PATH:/System/Library/Fonts:/Library/Fonts:~/.fonts
+    '';
+
     };
   };
 }
