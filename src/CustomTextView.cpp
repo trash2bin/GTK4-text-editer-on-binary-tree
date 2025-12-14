@@ -37,7 +37,6 @@ CustomTextView::CustomTextView() {
     // ensure flags initial state
     m_mouse_selecting = false;
     m_sel_anchor = -1;
-    m_desired_column_px = -1;
 
     // Motion controller
     auto motion = Gtk::EventControllerMotion::create();
@@ -71,12 +70,6 @@ void CustomTextView::set_tree(Tree* tree) {
 void CustomTextView::reload_from_tree() {
     m_line_cache.clear(); // инвалидация кэша при смене дерева
     update_size_request();
-    queue_draw();
-}
-
-void CustomTextView::mark_dirty() {
-    m_line_cache.clear(); // инвалидация кэша при смене дерева
-    m_dirty = true;
     queue_draw();
 }
 
@@ -133,13 +126,13 @@ bool CustomTextView::on_key_pressed(guint keyval, guint /*keycode*/, Gdk::Modifi
     auto perform_erase = [&](int start, int len) {
         try {
             m_tree->erase(start, len);
+            // Инвалидация кэша и обновление UI
+            clear_selection();
+            reload_from_tree(); // Теперь это быстрая операция
+            set_cursor_byte_offset(start);
         } catch (const std::exception& e) {
             std::cerr << "Tree::erase error: " << e.what() << '\n';
         }
-        // Инвалидация кэша и обновление UI
-        clear_selection();
-        reload_from_tree(); // Теперь это быстрая операция
-        set_cursor_byte_offset(start);
     };
 
     // 1. Обработка BACKSPACE
@@ -380,19 +373,19 @@ void CustomTextView::update_size_request() {
 // Получить кешированую строку
 const std::string& CustomTextView::get_cached_line(int line) {
     auto it = m_line_cache.find(line);
-    if (it != m_line_cache.end()) {
-        return it->second;
+    if (it != m_line_cache.end()) return it->second;
+    
+    char* raw = m_tree->getLine(line);
+    if (!raw) {
+        // Возвращаем пустую строку для несуществующих строк
+        static std::string empty;
+        m_line_cache[line] = empty;
+        return m_line_cache[line];
     }
-
-    // Единственный вызов getLine()
-    auto raw = m_tree->getLine(line);
-
-    auto res = m_line_cache.emplace(
-        line,
-        std::string(raw)
-    );
-
-    return res.first->second;
+    
+    std::unique_ptr<char[]> guard(raw);  // гарантированное освобождение
+    auto result = m_line_cache.emplace(line, std::string(raw));
+    return result.first->second;
 }
 
 // === ОТРИСОВКА  ===

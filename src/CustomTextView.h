@@ -11,7 +11,6 @@ public:
 
     void set_tree(Tree* tree);
     void reload_from_tree();
-    void mark_dirty();
 
     int get_cursor_byte_offset() const { return m_cursor_byte_offset; }
     void set_cursor_byte_offset(int offset);
@@ -78,8 +77,5 @@ private:
 
     bool m_mouse_selecting = false;   // true когда идёт drag-selection
     int m_sel_anchor = -1;            // байтовый оффсет начала выделения (якорь)
-    int m_desired_column_px = -1;     // предпочитаемая горизонтальная позиция (px) для Up/Down
-
-    bool m_dirty{true};
 };
 #endif // CUSTOM_TEXT_VIEW_H
