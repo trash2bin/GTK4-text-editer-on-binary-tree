@@ -409,7 +409,7 @@ const std::string& CustomTextView::get_cached_line(int line) {
     return res.first->second;
 }
 
-// === ОТРИСОВКА (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ) ===
+// === ОТРИСОВКА  ===
 void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, int width, int height) {
     if (!m_tree) {
         cr->set_source_rgb(1.0, 1.0, 1.0);
@@ -417,7 +417,6 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         return;
     }
 
-    // Рисуем фон
     cr->set_source_rgb(0.3, 0.3, 0.3);
     cr->paint();
 
@@ -430,7 +429,6 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         return;
     }
 
-    // Определяем видимую область (Culling)
     double clip_x1, clip_y1, clip_x2, clip_y2;
     cr->get_clip_extents(clip_x1, clip_y1, clip_x2, clip_y2);
     int total_lines = m_tree->getTotalLineCount();
@@ -452,36 +450,31 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     // Цикл ТОЛЬКО по видимым строкам
     for (int i = first_line; i < last_line; ++i) {
         const std::string& fullLine = get_cached_line(i);
-        
-        // Получаем текст строки для отрисовки, убирая '\n'
-        std::string line_text = fullLine;
-        if (!line_text.empty() && line_text.back() == '\n') {
-            line_text.pop_back();
-        }
-        
         int lineLen = static_cast<int>(fullLine.size()); // Длина в байтах, включая '\n'
         int y_pos = TOP_MARGIN + i * m_line_height;
         int lineEndOffset = lineStartOffset + lineLen;
 
-        try {
-            // Устанавливаем текст в Pango Layout. Glib::ustring проверит UTF-8 на валидность.
-            Glib::ustring u_line_text(line_text);
-            m_layout->set_text(u_line_text);
+        // Готовим текст для отрисовки (убираем '\n')
+        std::string line_text = fullLine;
+        if (!line_text.empty() && line_text.back() == '\n') {
+            line_text.pop_back();
+        }
+        int displayLen_bytes = static_cast<int>(line_text.length());
 
-            // --- 1. Отрисовка выделения (Selection) ---
+        try {
+            // Устанавливаем текст в layout ОДИН РАЗ на строку
+            m_layout->set_text(Glib::ustring(line_text));
+
+            // Отрисовка выделения (Selection)
             if (m_sel_len > 0) {
-                // Вычисляем байтовые смещения выделения относительно начала строки
                 int sel_start_byte = std::max(m_sel_start, lineStartOffset) - lineStartOffset;
                 int sel_end_byte = std::min(m_sel_start + m_sel_len, lineEndOffset) - lineStartOffset;
 
-                // Layout не содержит '\n', поэтому ограничиваем смещения длиной отображаемого текста
-                int display_len = static_cast<int>(line_text.length());
-                int start_index_for_pango = std::clamp(sel_start_byte, 0, display_len);
-                int end_index_for_pango = std::clamp(sel_end_byte, 0, display_len);
+                int start_index_for_pango = std::clamp(sel_start_byte, 0, displayLen_bytes);
+                int end_index_for_pango = std::clamp(sel_end_byte, 0, displayLen_bytes);
 
                 if (start_index_for_pango < end_index_for_pango) {
                     Pango::Rectangle rect1, rect2;
-                    // get_cursor_pos ожидает байтовый индекс, передаем его напрямую
                     m_layout->get_cursor_pos(start_index_for_pango, rect1, rect1);
                     m_layout->get_cursor_pos(end_index_for_pango, rect2, rect2);
 
@@ -490,27 +483,26 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
 
                     cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
                     cr->rectangle(x1, y_pos, std::max(1, x2 - x1), m_line_height);
-                    cr->fill(); }
+                    cr->fill();
+                }
             }
 
-            // --- 2. Отрисовка текста ---
+            // Отрисовка текста 
             cr->move_to(LEFT_MARGIN, y_pos);
             cr->set_source_rgb(text_color.get_red(), text_color.get_green(), text_color.get_blue());
             pango_cairo_show_layout(cr->cobj(), m_layout->gobj());
 
         } catch (const Glib::Error& ex) {
-            // Обработка невалидного UTF-8, полученного из Tree
             std::cerr << "Invalid UTF-8 in line " << i << ": " << ex.what() << std::endl;
             cr->set_source_rgb(1, 0, 0);
             cr->rectangle(LEFT_MARGIN, y_pos, width - LEFT_MARGIN, m_line_height);
             cr->stroke();
         }
 
-        // Инкрементируем lineStartOffset на полную длину строки (включая '\n')
         lineStartOffset += lineLen;
     }
 
-    // --- 3. Отрисовка курсора ---
+    // Отрисовка курсора
     if (m_show_caret && m_cursor_byte_offset >= 0) {
         int cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
         if (cursorLineIdx >= first_line && cursorLineIdx < last_line) {
@@ -522,18 +514,12 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
             
             int lineStart = m_tree->getOffsetForLine(cursorLineIdx);
             int offsetInLine_bytes = m_cursor_byte_offset - lineStart;
-
-            // ВАЖНО: get_cursor_pos ожидает байтовый индекс.
-            // Но layout не содержит '\n', поэтому смещение не может быть больше длины line_text.
             int display_len = static_cast<int>(line_text.length());
             int cursor_index_for_pango = std::clamp(offsetInLine_bytes, 0, display_len);
 
             try {
-                Glib::ustring u_line_text(line_text);
-                m_layout->set_text(u_line_text);
-                
+                m_layout->set_text(Glib::ustring(line_text));
                 Pango::Rectangle pos;
-                // Передаем байтовый индекс, который соответствует позиции в line_text
                 m_layout->get_cursor_pos(cursor_index_for_pango, pos, pos);
 
                 int cx = LEFT_MARGIN + pos.get_x() / PANGO_SCALE;
@@ -549,48 +535,37 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
 }
 
 int CustomTextView::get_byte_offset_at_xy(double x, double y) {
-    if (!m_tree) return 0;
-    if (m_tree->isEmpty()) return 0;
-    
-    //  Какая это строка визуально?
+    if (!m_tree || m_tree->isEmpty()) return 0;
+   
     int lineIdx = static_cast<int>((y - TOP_MARGIN) / m_line_height);
     int total = m_tree->getTotalLineCount();
-    
     if (lineIdx < 0) lineIdx = 0;
     if (lineIdx >= total) lineIdx = total - 1;
-
-    // Получаем начало строки из дерева
+   
     int lineStartOffset = m_tree->getOffsetForLine(lineIdx);
-    
-    // Получаем текст строки для измерения Pango
+   
     char* rawLine = m_tree->getLine(lineIdx);
     if (!rawLine) return lineStartOffset;
-    
+   
     std::unique_ptr<char[]> guard(rawLine);
     std::string lineStr(rawLine);
-    // Для расчетов позиции курсора \n в конце обычно не нужен, 
-    // но если строка пустая (только \n), lineStr станет "", что ок.
     if (!lineStr.empty() && lineStr.back() == '\n') lineStr.pop_back();
 
-    // Спрашиваем Pango: какой байт соответствует X?
-    auto layout = create_pango_layout(lineStr);
-    layout->set_font_description(m_font_desc);
-    
-    int index = 0;
-    int trailing = 0;
+    // --- ОПТИМИЗАЦИЯ: Переиспользуем m_layout вместо создания нового ---
+    // Это намного быстрее, так как создание Pango::Layout - дорогая операция.
+    m_layout->set_text(lineStr);
+    m_layout->set_font_description(m_font_desc);
+   
+    int index = 0, trailing = 0;
     int clickX = static_cast<int>(x) - LEFT_MARGIN;
-
-    layout->xy_to_index(clickX * PANGO_SCALE, 0, index, trailing);
-
-    // xy_to_index возвращает индекс байта символа.
-    // trailing > 0 значит кликнули в правую половину символа -> сдвигаем к следующему
+    m_layout->xy_to_index(clickX * PANGO_SCALE, 0, index, trailing);
+   
     const char* ptr = lineStr.c_str() + index;
     if (trailing > 0) {
         ptr = g_utf8_next_char(ptr);
     }
-    
+   
     int offsetInLine = static_cast<int>(ptr - lineStr.c_str());
-    
     return lineStartOffset + offsetInLine;
 }
 

@@ -5,7 +5,7 @@
 #include <vector>
 
 // Генератор случайной строки UTF-8
-std::string generateRandomLine(std::mt19937& rng, int minLen = 50, int maxLen = 200) {
+std::string generateRandomLine(std::mt19937& rng, int minLen = 20, int maxLen = 80) {
     std::string ascii = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ,.!?;:";
     
     // Кириллица: диапазон А-я (русские буквы)
