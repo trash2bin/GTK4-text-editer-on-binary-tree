@@ -442,24 +442,21 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     Gdk::RGBA text_color("white");
     Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.6);
 
-    int lineStartOffset = 0;
-    if (first_line < total_lines) {
-        lineStartOffset = m_tree->getOffsetForLine(first_line);
-    }
-
     // Цикл ТОЛЬКО по видимым строкам
     for (int i = first_line; i < last_line; ++i) {
         const std::string& fullLine = get_cached_line(i);
         int lineLen = static_cast<int>(fullLine.size()); // Длина в байтах, включая '\n'
         int y_pos = TOP_MARGIN + i * m_line_height;
-        int lineEndOffset = lineStartOffset + lineLen;
+        
+        // Вычисляем глобальный сдвиг строки ДО изменения lineLen
+        int lineStartOffset = m_tree->getOffsetForLine(i);
+        int lineEndOffset = lineStartOffset + lineLen; // полная длина строки с \n
 
         // Готовим текст для отрисовки (убираем '\n')
         std::string line_text = fullLine;
         if (!line_text.empty() && line_text.back() == '\n') {
             line_text.pop_back();
         }
-        int displayLen_bytes = static_cast<int>(line_text.length());
 
         try {
             // Устанавливаем текст в layout ОДИН РАЗ на строку
@@ -467,23 +464,35 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
 
             // Отрисовка выделения (Selection)
             if (m_sel_len > 0) {
-                int sel_start_byte = std::max(m_sel_start, lineStartOffset) - lineStartOffset;
-                int sel_end_byte = std::min(m_sel_start + m_sel_len, lineEndOffset) - lineStartOffset;
+                int sel_start_global = m_sel_start;
+                int sel_end_global = m_sel_start + m_sel_len;
 
-                int start_index_for_pango = std::clamp(sel_start_byte, 0, displayLen_bytes);
-                int end_index_for_pango = std::clamp(sel_end_byte, 0, displayLen_bytes);
+                // Проверяем пересечение выделения с текущей строкой
+                if (sel_start_global < lineEndOffset && sel_end_global > lineStartOffset) {
+                    // Вычисляем локальные границы выделения в этой строке
+                    int local_start = std::max(sel_start_global, lineStartOffset) - lineStartOffset;
+                    int local_end = std::min(sel_end_global, lineEndOffset) - lineStartOffset;
 
-                if (start_index_for_pango < end_index_for_pango) {
-                    Pango::Rectangle rect1, rect2;
-                    m_layout->get_cursor_pos(start_index_for_pango, rect1, rect1);
-                    m_layout->get_cursor_pos(end_index_for_pango, rect2, rect2);
+                    // Ограничиваем индексы длиной строки без \n
+                    int line_text_length = static_cast<int>(line_text.length()); // Без \n
+                    local_start = std::clamp(local_start, 0, line_text_length);
+                    local_end = std::clamp(local_end, 0, line_text_length);
 
-                    int x1 = LEFT_MARGIN + rect1.get_x() / PANGO_SCALE;
-                    int x2 = LEFT_MARGIN + rect2.get_x() / PANGO_SCALE;
+                    // Проверяем, есть ли что выделять
+                    if (local_start < local_end) {
+                        Pango::Rectangle rect_start, rect_end;
+                        
+                        // Получаем позиции для начала и конца выделения
+                        m_layout->get_cursor_pos(local_start, rect_start, rect_start);
+                        m_layout->get_cursor_pos(local_end, rect_end, rect_end);
 
-                    cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
-                    cr->rectangle(x1, y_pos, std::max(1, x2 - x1), m_line_height);
-                    cr->fill();
+                        int x1 = LEFT_MARGIN + rect_start.get_x() / PANGO_SCALE;
+                        int x2 = LEFT_MARGIN + rect_end.get_x() / PANGO_SCALE;
+
+                        cr->set_source_rgba(sel_bg.get_red(), sel_bg.get_green(), sel_bg.get_blue(), sel_bg.get_alpha());
+                        cr->rectangle(x1, y_pos, x2 - x1, m_line_height);
+                        cr->fill();
+                    }
                 }
             }
 
@@ -498,11 +507,9 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
             cr->rectangle(LEFT_MARGIN, y_pos, width - LEFT_MARGIN, m_line_height);
             cr->stroke();
         }
-
-        lineStartOffset += lineLen;
     }
 
-    // Отрисовка курсора
+    // Отрисовка курсора (после основного текста)
     if (m_show_caret && m_cursor_byte_offset >= 0) {
         int cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
         if (cursorLineIdx >= first_line && cursorLineIdx < last_line) {
@@ -533,7 +540,6 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         }
     }
 }
-
 int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     if (!m_tree || m_tree->isEmpty()) return 0;
    
