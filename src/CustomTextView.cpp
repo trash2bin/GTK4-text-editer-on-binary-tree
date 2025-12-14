@@ -411,7 +411,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     double clip_x1, clip_y1, clip_x2, clip_y2;
     cr->get_clip_extents(clip_x1, clip_y1, clip_x2, clip_y2);
     int total_lines = m_tree->getTotalLineCount();
-    
+
     int first_line = static_cast<int>((clip_y1 - TOP_MARGIN) / m_line_height);
     int last_line = static_cast<int>((clip_y2 - TOP_MARGIN) / m_line_height) + 1;
     first_line = std::clamp(first_line, 0, std::max(0, total_lines - 1));
@@ -421,12 +421,20 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
     Gdk::RGBA text_color("white");
     Gdk::RGBA sel_bg(0.2, 0.4, 0.8, 0.6);
 
-    // Цикл ТОЛЬКО по видимым строкам
+    // подготовка для вычисления позиции курсора один раз
+    int cursorLineIdx = -1;
+    int cursor_cx = -1;
+    int cursor_cy = -1;
+    if (m_show_caret && m_cursor_byte_offset >= 0) {
+        cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
+    }
+
+    // Цикл ТОЛЬКО по видимым строкам — в нём теперь и вычисляем позицию курсора, если она в видимой строке
     for (int i = first_line; i < last_line; ++i) {
         const std::string& fullLine = get_cached_line(i);
         int lineLen = static_cast<int>(fullLine.size()); // Длина в байтах, включая '\n'
         int y_pos = TOP_MARGIN + i * m_line_height;
-        
+
         // Вычисляем глобальный сдвиг строки ДО изменения lineLen
         int lineStartOffset = m_tree->getOffsetForLine(i);
         int lineEndOffset = lineStartOffset + lineLen; // полная длина строки с \n
@@ -460,7 +468,7 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
                     // Проверяем, есть ли что выделять
                     if (local_start < local_end) {
                         Pango::Rectangle rect_start, rect_end;
-                        
+
                         // Получаем позиции для начала и конца выделения
                         m_layout->get_cursor_pos(local_start, rect_start, rect_start);
                         m_layout->get_cursor_pos(local_end, rect_end, rect_end);
@@ -480,6 +488,24 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
             cr->set_source_rgb(text_color.get_red(), text_color.get_green(), text_color.get_blue());
             pango_cairo_show_layout(cr->cobj(), m_layout->gobj());
 
+            // --- ВАЖНО: вычисляем позицию курсора именно здесь, если курсор на этой строке ---
+            if (cursorLineIdx == i) {
+                int lineStart = lineStartOffset;
+                int offsetInLine_bytes = m_cursor_byte_offset - lineStart;
+                int display_len = static_cast<int>(line_text.length());
+                int cursor_index_for_pango = std::clamp(offsetInLine_bytes, 0, display_len);
+
+                try {
+                    Pango::Rectangle pos;
+                    m_layout->get_cursor_pos(cursor_index_for_pango, pos, pos);
+                    cursor_cx = LEFT_MARGIN + pos.get_x() / PANGO_SCALE;
+                    cursor_cy = y_pos;
+                } catch (const Glib::Error& ex) {
+                    std::cerr << "Invalid UTF-8 for cursor on line " << cursorLineIdx << ": " << ex.what() << std::endl;
+                    cursor_cx = -1;
+                }
+            }
+
         } catch (const Glib::Error& ex) {
             std::cerr << "Invalid UTF-8 in line " << i << ": " << ex.what() << std::endl;
             cr->set_source_rgb(1, 0, 0);
@@ -488,37 +514,14 @@ void CustomTextView::draw_with_cairo(const Cairo::RefPtr<Cairo::Context>& cr, in
         }
     }
 
-    // Отрисовка курсора (после основного текста)
-    if (m_show_caret && m_cursor_byte_offset >= 0) {
-        int cursorLineIdx = find_line_index_by_byte_offset(m_cursor_byte_offset);
-        if (cursorLineIdx >= first_line && cursorLineIdx < last_line) {
-            const std::string& fullLine = get_cached_line(cursorLineIdx);
-            std::string line_text = fullLine;
-            if (!line_text.empty() && line_text.back() == '\n') {
-                line_text.pop_back();
-            }
-            
-            int lineStart = m_tree->getOffsetForLine(cursorLineIdx);
-            int offsetInLine_bytes = m_cursor_byte_offset - lineStart;
-            int display_len = static_cast<int>(line_text.length());
-            int cursor_index_for_pango = std::clamp(offsetInLine_bytes, 0, display_len);
-
-            try {
-                m_layout->set_text(Glib::ustring(line_text));
-                Pango::Rectangle pos;
-                m_layout->get_cursor_pos(cursor_index_for_pango, pos, pos);
-
-                int cx = LEFT_MARGIN + pos.get_x() / PANGO_SCALE;
-                int cy = TOP_MARGIN + cursorLineIdx * m_line_height;
-                cr->set_source_rgb(0, 0, 0);
-                cr->rectangle(cx, cy, 1.5, m_line_height);
-                cr->fill();
-            } catch (const Glib::Error& ex) {
-                 std::cerr << "Invalid UTF-8 for cursor on line " << cursorLineIdx << ": " << ex.what() << std::endl;
-            }
-        }
+    // Отрисовка курсора (после основного текста) — теперь без повторного set_text
+    if (m_show_caret && m_cursor_byte_offset >= 0 && cursor_cx >= 0) {
+        cr->set_source_rgb(0, 0, 0);
+        cr->rectangle(cursor_cx, cursor_cy, 1.5, m_line_height);
+        cr->fill();
     }
 }
+
 int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     if (!m_tree || m_tree->isEmpty()) return 0;
    
@@ -539,7 +542,6 @@ int CustomTextView::get_byte_offset_at_xy(double x, double y) {
     // --- ОПТИМИЗАЦИЯ: Переиспользуем m_layout вместо создания нового ---
     // Это намного быстрее, так как создание Pango::Layout - дорогая операция.
     m_layout->set_text(lineStr);
-    m_layout->set_font_description(m_font_desc);
    
     int index = 0, trailing = 0;
     int clickX = static_cast<int>(x) - LEFT_MARGIN;
