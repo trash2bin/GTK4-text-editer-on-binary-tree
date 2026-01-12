@@ -7,7 +7,7 @@
 
   outputs = { nixpkgs, ... }:
   let
-    system = "aarch64-darwin"; # на linux x86-64 тоже все работает без проблем
+    system = "aarch64-linux"; # на linux x86-64 или aarch64-darwin тоже все работает
     pkgs = import nixpkgs { inherit system; };
   in
   {
@@ -15,7 +15,6 @@
       # Базовые инструменты для сборки
       nativeBuildInputs = with pkgs; [
         cmake
-        ninja
         gnumake      # make
         pkg-config
         fontconfig
@@ -23,28 +22,17 @@
 
       # Компилятор/линкер/архиватор и отладка
       buildInputs = with pkgs; [
-        gcc                  # GNU toolchain (gcc, gcc-ar, gcc-ranlib)
-        binutils             # ar/ranlib/ld/strip (на случай fallback)
+        gcc
+        binutils
         gdb
-        clang-tools          # опционально: clang-tidy/clang-format
+        clang-tools
         gtkmm4
         libsigcxx
-        
+
         noto-fonts
         noto-fonts-color-emoji
         liberation_ttf
       ];
-
-    # Настройка Fontconfig для поиска системных шрифтов macOS не очень то и оно работает на 26 версии ну лан пусть будет
-    shellHook = ''
-      export PANGOCAIRO_BACKEND=fc
-      export FONTCONFIG_PATH=${pkgs.fontconfig.out}/etc/fonts
-      export FONTCONFIG_FILE=${pkgs.fontconfig.out}/etc/fonts/fonts.conf
-      
-      # Добавляем пути к системным шрифтам macOS
-      export FONTCONFIG_PATH=$FONTCONFIG_PATH:/System/Library/Fonts:/Library/Fonts:~/.fonts
-    '';
-
     };
   };
 }
